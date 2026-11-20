@@ -2,6 +2,12 @@ name: Verify released Windows app
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag to verify
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,13 +17,14 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 12
     env:
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Fetch tagged smoke test and release assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
+          if ($env:TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid release tag" }
           git clone --quiet --depth 1 --branch "$env:TAG" "https://github.com/$env:GITHUB_REPOSITORY.git" src
           if ($LASTEXITCODE) { throw "Could not fetch release tag" }
           gh release download "$env:TAG" --repo "$env:GITHUB_REPOSITORY" --pattern Sitenote-Windows-x64.exe --pattern Sitenote-Desktop.zip --pattern SHA256SUMS.txt --dir artifacts
@@ -38,10 +45,13 @@ jobs:
           if ((Get-Content 'artifacts/SHA256SUMS.txt') -cnotcontains "$hash  Sitenote-Desktop.zip") { throw "ZIP checksum mismatch" }
           Expand-Archive $zip -DestinationPath 'browser test'
           $env:SITE_WEB_PORT = '18788'
-          $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d /c Sitenote.cmd --no-open' -WorkingDirectory 'browser test' -PassThru
+          node --version
+          $testNodeVersion = [version]((node --version).TrimStart('v'))
+          if ($testNodeVersion -lt [version]'22.18.0') { throw "Node 22.18 or newer is required" }
+          $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d /c Sitenote.cmd --no-open' -WorkingDirectory 'browser test' -PassThru -RedirectStandardOutput 'cmd-out.log' -RedirectStandardError 'cmd-err.log'
           try {
             $root = 'http://127.0.0.1:18788'
-            $deadline = [datetime]::UtcNow.AddSeconds(30)
+            $deadline = [datetime]::UtcNow.AddSeconds(60)
             do {
               try { $status = Invoke-RestMethod "$root/__sitenote/ready" -TimeoutSec 2 } catch { $status = $null }
               if ($status.app -eq 'sitenote-web') { break }
@@ -51,4 +61,5 @@ jobs:
             if ((Invoke-WebRequest "$root/").Content -notmatch 'Sitenote') { throw "Web app did not load" }
           } finally {
             if (!$process.HasExited) { taskkill /t /f /pid $process.Id }
+            Get-Content 'cmd-out.log','cmd-err.log'
           }
