@@ -113,20 +113,21 @@ test('voice references are the matched historical originals, readable during rec
           reply({tokens:[{text, speaker:'1', is_final:true, start_ms:audioMs, end_ms:audioMs + 40}, {text:'<end>', is_final:true}]});
         });
       }
-      if (provider.pathname !== '/v1/realtime') throw Error(`Unexpected fixture provider ${provider.pathname}`);
-      let input;
+      if (provider.pathname !== '/v1/live/sessions') throw Error(`Unexpected fixture provider ${provider.pathname}`);
       return fakeSocket((data, reply) => {
         const message = JSON.parse(data);
-        if (message.type === 'session.update') reply({type:'session.updated', session:{type:'realtime'}});
-        if (message.type === 'conversation.item.create' && message.item?.role === 'user') input = message.item.content[0]?.text;
-        if (message.type !== 'response.create') return;
+        if (message.type === 'session.close') return reply({type:'session.closed',reason:'close_requested'});
+        if (message.type !== 'session.start') return;
         const index = requests.length;
-        requests.push({question:input, instructions:message.response?.instructions});
-        const response = {id:`source-response-${index}`, metadata:message.response?.metadata};
-        reply({type:'response.created', response});
-        reply({type:'response.output_audio.delta', response_id:response.id, event_id:`audio-${index}`, delta:pcm.toString('base64')});
-        reply({type:'response.output_audio_transcript.delta', response_id:response.id, event_id:`text-${index}`, delta:index === 0 ? answer : emptyAnswer});
-        reply({type:'response.done', response:{...response, status:'completed'}});
+        const input = message.session.input;
+        requests.push({
+          question: input.filter(item => item.role === 'user').at(-1).content[0].text,
+          evidence: input.find(item => item.role === 'user'
+            && item.content[0].text.startsWith('다음은 참고 데이터입니다: '))?.content[0].text ?? '',
+        });
+        reply({type:'session.started'});
+        reply({type:'session.output_audio.delta', event_id:`audio-${index}`, delta:pcm.toString('base64')});
+        reply({type:'session.output_transcript.delta', event_id:`text-${index}`, delta:index === 0 ? answer : emptyAnswer, start_ms:10,end_ms:110});
       });
     },
   });
@@ -147,10 +148,10 @@ test('voice references are the matched historical originals, readable during rec
     utterance = question;
     await expect(turns.filter({hasText:answer})).toBeVisible();
     expect(requests.map(item => item.question)).toEqual([question]);
-    const context = requests[0].instructions;
+    const context = requests[0].evidence;
     expect(context).toContain(original);
     expect(context).toContain(corroborating);
-    const historical = JSON.parse(context.split('참고 데이터(JSON 문자열): ')[1]).split('검색된 과거 원문:\n')[1];
+    const historical = JSON.parse(context.split('다음은 참고 데이터입니다: ')[1]).split('검색된 과거 원문:\n')[1];
     expect(historical.split('\n').map(line => JSON.parse(line).excerpt).sort()).toEqual([original, corroborating].sort());
     const excludedSources = [titleOnly, aiOnly, summaryOnly, privateText, otherProjectText, futureText, unrelated, lowerRanked];
     for (const excluded of excludedSources) {
@@ -177,7 +178,7 @@ test('voice references are the matched historical originals, readable during rec
     utterance = noMatch;
     await expect(turns.filter({hasText:emptyAnswer})).toBeVisible();
     expect(requests.map(item => item.question)).toEqual([question, noMatch]);
-    expect(requests[1].instructions).not.toContain('검색된 과거 원문:');
+    expect(requests[1].evidence).not.toContain('검색된 과거 원문:');
     await expect(sources).toHaveCount(0);
     await page.getByRole('button', {name:'AI 질문 닫기'}).click();
     await page.getByRole('button', {name:'녹음 종료'}).click();

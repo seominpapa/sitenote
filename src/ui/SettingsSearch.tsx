@@ -1,19 +1,82 @@
-import { useState } from 'react';
-import { ScrollView, Switch, Text, View } from 'react-native';
-import type { Health, Settings } from '../api';
+import { useEffect, useRef, useState } from 'react';
+import { AppState, Pressable, ScrollView, Switch, Text, View } from 'react-native';
+import { fetchVoicePreview, type Health, type Settings } from '../api';
 import type { Evidence } from '../records/core';
-import { Button, Field, Header, Notice, styles } from './base';
+import { Button, color, Field, Header, Notice, styles } from './base';
 import { AnswerSources, evidenceRefs, type Jump, RichText } from './Library';
+import SiteAudio from '../../modules/site-audio';
+import { AI_VOICES, DEFAULT_AI_VOICE, type AiVoice } from '../../server/voices.mjs';
 
-export function SettingsPage({settings, back, connect, setAudioPreference, exportAll, status, result, working}: {
+function VoicePreference({settings, change, disabled}: {settings: Settings; change: (voice: AiVoice) => void; disabled: boolean}) {
+  const [stage, setStage] = useState<'idle' | 'loading' | 'playing'>('idle');
+  const [expanded, setExpanded] = useState(false);
+  const [error, setError] = useState('');
+  const active = useRef<AbortController | undefined>(undefined);
+  const voice = settings.voice ?? DEFAULT_AI_VOICE;
+  const label = (id: string) => id[0].toUpperCase() + id.slice(1);
+  const canPreview = !!settings.url && !!settings.token;
+
+  function stop() {
+    if (!active.current) return;
+    active.current.abort();
+    active.current = undefined;
+    void SiteAudio.stopPreview().catch(() => undefined);
+  }
+
+  useEffect(() => {
+    const state = AppState.addEventListener('change', next => { if (next !== 'active') { stop(); setStage('idle'); } });
+    return () => { state.remove(); stop(); };
+  }, []);
+
+  async function preview() {
+    if (active.current || !settings.url || !settings.token) return;
+    const controller = new AbortController();
+    active.current = controller;
+    setError('');
+    setStage('loading');
+    try {
+      const wave = await fetchVoicePreview({url:settings.url, token:settings.token}, voice, controller.signal);
+      if (controller.signal.aborted) return;
+      setStage('playing');
+      await SiteAudio.playPreview(wave);
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '목소리를 미리 재생하지 못했습니다.');
+    } finally {
+      if (active.current === controller) { active.current = undefined; setStage('idle'); }
+    }
+  }
+
+  return <View style={styles.card}>
+    <Text style={styles.heading}>AI 목소리</Text>
+    <Text style={styles.small}>녹음 중 AI 답변과 회의 후 보충질문에 선택한 목소리가 적용됩니다.</Text>
+    <View style={styles.row}>
+      <Button label={`목소리 선택 · ${label(voice)}`} onPress={() => setExpanded(value => !value)} disabled={disabled || stage !== 'idle'}/>
+      {stage === 'idle' ? <Button label="짧게 들어보기" disabled={disabled || !canPreview} onPress={() => void preview()}/>
+        : <Button label="미리듣기 중지" onPress={() => { stop(); setStage('idle'); }}/>}
+    </View>
+    {expanded && <View style={styles.row} accessibilityRole="radiogroup">
+      {AI_VOICES.map(id => <Pressable key={id} accessibilityRole="radio" accessibilityState={{checked:voice === id, disabled}}
+        disabled={disabled || stage !== 'idle'} onPress={() => { setExpanded(false); setError(''); change(id); }}
+        style={[styles.field, {backgroundColor:voice === id ? color.faint : color.paper}]}>
+        <Text style={styles.body}>{label(id)}{id === DEFAULT_AI_VOICE ? ' (기본)' : ''}</Text>
+      </Pressable>)}
+    </View>}
+    {!canPreview && <Text style={styles.small}>미리 듣기를 사용하려면 서버에 먼저 연결하세요.</Text>}
+    {stage !== 'idle' && <Text style={styles.small} accessibilityLiveRegion="polite">{stage === 'loading' ? '목소리 미리듣기 준비 중…' : '미리듣기 재생 중'}</Text>}
+    {error && <Notice text={error} danger/>}
+  </View>;
+}
+
+export function SettingsPage({settings, back, connect, changeVoice, setAudioPreference, exportAll, status, result, working}: {
   settings: Settings; back: () => void; connect: (address: string, token: string, keepAudio: boolean) => void;
+  changeVoice: (voice: AiVoice) => void;
   setAudioPreference: (keepAudio: boolean) => void;
   exportAll: () => void; status?: string; result?: Health; working: boolean;
 }) {
   const [url, setUrl] = useState(settings.url || '');
   const [token, setToken] = useState(settings.token || '');
   return <>
-    <Header title="설정" sub="이 기기의 연결과 저장" onBack={back}/>
+    <Header sub="이 기기의 연결과 저장" onBack={back}/>
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <View style={styles.card}>
         <Text style={styles.heading}>서버 연결</Text>
@@ -25,6 +88,7 @@ export function SettingsPage({settings, back, connect, setAudioPreference, expor
           disabled={working} onPress={() => connect(url, token, !!settings.keepAudio)}/></View>
         {result && <Text style={styles.small}>서버 응답 확인 · GPT-Live {result.providers.live ? '키 설정됨' : '키 없음'} · Soniox {result.providers.soniox ? '키 설정됨' : '키 없음'} · 요약/검색 {result.providers.text ? '키 설정됨' : '키 없음'}</Text>}
       </View>
+      <VoicePreference settings={settings} change={changeVoice} disabled={working}/>
       <View style={styles.card}>
         <Text style={styles.heading}>저장 및 내보내기</Text>
         <Text style={styles.small}>확정 전사와 요약은 항상 이 기기에 Markdown으로 저장합니다.</Text>
@@ -33,7 +97,7 @@ export function SettingsPage({settings, back, connect, setAudioPreference, expor
           <Switch accessibilityLabel="마이크 음성 사본도 보관" value={!!settings.keepAudio} disabled={working} onValueChange={setAudioPreference}/>
         </View>
         <Text style={styles.small}>새로 시작하는 녹음에 적용됩니다. AI가 재생되는 구간은 음성 사본에서 음소거됩니다.</Text>
-        <View style={styles.row}><Button label="전체 Markdown 내보내기" onPress={exportAll}/></View>
+        <View style={styles.row}><Button label="전체 내보내기 (ZIP)" onPress={exportAll} disabled={working}/></View>
       </View>
       {status && <Notice text={status}/>}
       <Notice text="개인 대화와 회의의 전사는 Soniox가 처리합니다. AI 음성 질문을 켜거나 보완 대화를 시작한 경우에는 OpenAI가 음성 답변을 처리하며, 요약에는 관련 텍스트를 사용합니다."/>

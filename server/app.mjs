@@ -8,6 +8,7 @@ import { createLocalWeb } from './web.mjs';
 import { createKeyStore, parseKeys } from './keys.mjs';
 import { categoryResult, validCategories } from './categories.mjs';
 import { typedFollowupResult, validTypedFollowup } from './typed-followup.mjs';
+import { validVoicePreview, voicePreview } from './voice-preview.mjs';
 
 const digest = (secret) => createHash('sha256').update(secret).digest();
 const maxBytes = 200_000;
@@ -81,6 +82,31 @@ export function createApp(config) {
 
   const streams = new WebSocketServer({ noServer: true, maxPayload: 200_000, perMessageDeflate: false });
   let textPending = 0;
+  let previewPending = false;
+  async function preview(req, res) {
+    const size = 256;
+    const data = jsonType(req, size) && await readJson(req, size).catch(() => null);
+    if (res.destroyed) return;
+    if (!validVoicePreview(data)) return json(res, 400, { error: '지원하는 AI 목소리를 선택하세요.' });
+    if (!options.openaiKey) return json(res, 503, { error: '서버에 OpenAI API 키가 없습니다.' });
+    if (previewPending || !allow('/v1/voice-preview', 10)) return json(res, 429, { error: '잠시 뒤 다시 들어보세요.' });
+    const control = new AbortController();
+    const cancel = () => control.abort();
+    res.once('close', cancel);
+    previewPending = true;
+    try {
+      const wav = await voicePreview(data.voice, options, control.signal);
+      if (res.destroyed) return;
+      res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': wav.length,
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      return res.end(wav);
+    } catch {
+      if (!res.destroyed) return json(res, 502, { error: '목소리를 미리 들을 수 없습니다. API 키와 GPT-Live 접근 권한을 확인한 뒤 다시 시도하세요.' });
+    } finally {
+      res.off('close', cancel);
+      previewPending = false;
+    }
+  }
   const handler = async (req, res) => {
     if (!desktopAuthenticated(req) || (web && !web.accepts(req))) {
       return json(res, 403, {error: '노트북의 로컬 웹 주소에서 실행해 주세요.'});
@@ -105,6 +131,7 @@ export function createApp(config) {
     if (!allow('http', 80)) return json(res, 429, { error: '요청이 너무 많습니다. 잠시 뒤 다시 시도하세요.' });
     const path = req.url;
     if (req.method === 'GET' && path === '/health') return json(res, 200, health());
+    if (req.method === 'POST' && path === '/v1/voice-preview') return preview(req, res);
     const route = textRoutes.get(path);
     if (req.method !== 'POST' || !route) return json(res, 404, { error: '요청을 찾을 수 없습니다.' });
     const {size, rate, valid, result} = route;

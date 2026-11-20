@@ -1,5 +1,5 @@
 import { quotedReferences } from '../server/voice-quotes.mjs';
-import { isOriginalTurn, parseOriginalSourceRef, recordInScope, searchContext, searchHumanOriginals, searchRecords, turnEvidence,
+import { isOriginalTurn, parseOriginalSourceRef, recordInScope, searchContext, searchHumanOriginals, searchRecords, speakerDisplayId, turnEvidence,
   type Evidence, type RecordData, type SearchScope, type Turn } from './records/core.ts';
 
 export function scopeFor(record: RecordData): SearchScope {
@@ -52,7 +52,8 @@ export function analysisContext(record: RecordData): string {
     const evidence = turnEvidence(record, turn);
     return evidence.reference + '\n' + quote({
       ...header, section: turn.section, role: turn.role, timeMs: turn.timeMs,
-      speaker: evidence.speaker, interrupted: turn.interrupted, text: turn.text,
+      speaker: turn.role === 'speaker' && turn.speakerId ? `화자 ${speakerDisplayId(turn.speakerId)}` : evidence.speaker,
+      interrupted: turn.interrupted, text: turn.text,
     });
   })].join('\n\n');
 }

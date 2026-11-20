@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
-import { parseTranscript, transcriptMarkdown } from '../../src/records/markdown.ts';
+import { parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown } from '../../src/records/markdown.ts';
 import { createRecord } from '../../src/records/model.ts';
 
 const title = '현장 착공 준비 회의';
@@ -16,7 +16,7 @@ const turns = [
   utterance('supplement-two','followup:c:1','측정기는 제가 반납합니다.',5_000,'followup'),
 ];
 
-test('speaker edits persist across report reload and export without affecting different connections', async ({page}) => {
+test('speaker edits update saved summaries and survive reload and export without affecting other connections', async ({page}) => {
   const server = createApp({
     webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
     accessToken:'local-mock-speaker-test-token-only',
@@ -37,7 +37,15 @@ test('speaker edits persist across report reload and export without affecting di
         tx.oncomplete = () => { db.close(); resolve(); };
         tx.onabort = () => { db.close(); reject(tx.error); };
       };
-    }), {id, 'transcript.md':transcriptMarkdown({...createRecord({id,kind:'meeting',title}), turns})});
+    }), {id, 'transcript.md':transcriptMarkdown({...createRecord({id,kind:'meeting',title}), turns}),
+      'summary.md':summaryMarkdown([
+        '## 주요 논의',
+        '- 발언자 미확인 (화자 1)이 안전 점검을 부탁했습니다. [record:speaker-test#first]',
+        '- 화자 1은 출입증을 준비해 달라고 했습니다. [record:speaker-test#second]',
+        '- 화자 1은 작업 목록을 확인했습니다. [record:speaker-test#reconnected]',
+        '## 회의 후 추가 설명',
+        '- 화자 1이 내일 순찰합니다.',
+      ].join('\n'))});
     const reopen = async () => {
       await page.reload();
       await page.getByTestId('record-item').filter({hasText:title}).click();
@@ -57,6 +65,10 @@ test('speaker edits persist across report reload and export without affecting di
     await expect(source('first')).toContainText('김 담당 (화자 1)');
     await expect(source('second')).toContainText('김 담당 (화자 1)');
     await expect(source('reconnected')).toContainText('발언자 미확인 (화자 1)');
+    const summary = page.locator('#summary');
+    await expect(summary).toContainText('김 담당이 안전 점검을 부탁했습니다.');
+    await expect(summary).toContainText('김 담당은 출입증을 준비해 달라고 했습니다.');
+    await expect(summary).toContainText('화자 1은 작업 목록을 확인했습니다.');
     await rename('회의 후 보충 대화', /화자 1/, '이 참가자');
     await expect(source('supplement-one')).toContainText('이 참가자 (화자 1)');
     await expect(source('supplement-two')).toContainText('이 참가자 (화자 1)');
@@ -64,6 +76,7 @@ test('speaker edits persist across report reload and export without affecting di
     await expect(source('first')).toContainText('김 담당 (화자 1)');
     await expect(source('supplement-two')).toContainText('이 참가자 (화자 1)');
     await expect(source('reconnected')).toContainText('발언자 미확인 (화자 1)');
+    await expect(summary).toContainText('이 참가자가 내일 순찰합니다.');
 
     const downloadRequested = page.waitForEvent('download');
     await page.getByRole('button', {name:'Markdown 내보내기'}).click();
@@ -73,6 +86,8 @@ test('speaker edits persist across report reload and export without affecting di
     expect(exported.turns).toEqual(turns);
     expect(markdown.match(/### .*김 담당/g)).toHaveLength(2);
     expect(markdown.match(/### .*이 참가자/g)).toHaveLength(2);
+    expect(parseSummary(markdown.split('\n---\n\n').at(-1)).summary).toContain('김 담당이 안전 점검을 부탁했습니다.');
+    expect(parseSummary(markdown.split('\n---\n\n').at(-1)).summary).toContain('이 참가자가 내일 순찰합니다.');
   } finally {
     await page.close();
     await new Promise(done => server.close(done));

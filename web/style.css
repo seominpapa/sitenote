@@ -113,6 +113,7 @@ input::placeholder { color: var(--muted-ink); opacity: 1 }
 input[type=checkbox] { accent-color: var(--primary) }
 .inline > input { flex: 1 1 11rem }
 label > input:not([type=checkbox]), label > select { width: 100% }
+.voice-setting { margin-block-start: .75rem }
 
 .library { margin-block-start: clamp(1.75rem, 4vw, 3rem); min-width: 0 }
 .section-heading { align-items: start; flex-direction: column }

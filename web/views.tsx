@@ -1,16 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { searchRecords, speakerGroups, speakerLabel, timeLabel, type Evidence, type RecordData, type Turn } from '../src/records/core.ts';
+import { summaryWithSpeakerNames } from '../src/records/summary-speakers.ts';
 import { date, Icon, type Jump } from './ui.tsx';
 import { pastSources, SavedSources, SourceLink, VoiceSources } from './source-panels.tsx';
 import { currentQuotedRefs } from '../src/recordContext.ts';
 import type { createVoiceSession, Mode, Snapshot } from '../src/session/session.ts';
 import { citationParts } from '../src/workflow.ts';
-import { exportRecords } from './store.ts';
+import { exportRecord } from './store.ts';
 import type { Health, ProviderKeys } from './api.ts';
 import { categoryTree, type CategoryNode } from './library.ts';
 import { listenForVoiceConsent, type ConsentAudio, type ConsentState } from './voice-consent.ts';
 import { pendingTypedQuestions, type TypedPair } from '../src/typedFollowup.ts';
 import { TypedFollowup } from './typed-followup.tsx';
+import { VoiceSettings } from './voice-settings.tsx';
+import type { AiVoice } from '../server/voices.mjs';
 
 export type LibraryView = 'date' | 'category';
 export const categoryBatchLimit = 120;
@@ -189,7 +192,7 @@ export function RecordList({ records, loading, busy, open, remove, removeMany, e
   return <section className="library">
     <div className="section-heading">
       <h2>최근 노트 <small>{records.length}</small></h2>
-      <button className="button quiet" disabled={!records.length} onClick={exportAll}><Icon name="download" /> 전체 내보내기</button>
+      <button className="button quiet" disabled={!records.length || busy} onClick={exportAll}><Icon name="download" /> 전체 내보내기 (ZIP)</button>
     </div>
     <div className="library-toolbar">
       <div className="library-tabs" role="group" aria-label="기록 보기">{libraryViews.map(([mode, label]) =>
@@ -626,7 +629,8 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
     const matches = sources.filter(item => turn.sourceRefs!.includes(item.reference));
     return matches.length ? <SavedSources sources={matches} quoted={currentQuotedRefs(turn, matches)} open={open} /> : null;
   };
-  const summary = record.summary ? summaryLines(record.summary) : [];
+  const markdown = summaryWithSpeakerNames(record);
+  const summary = markdown ? summaryLines(markdown) : [];
   return <section className="page-stack">
     <button className="back" onClick={back} disabled={busy}>← 최근 노트</button>
     <div className="page-heading">
@@ -639,7 +643,7 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
           <button className="button quiet" disabled={busy} onClick={followup}>보충 질문하기</button>
           <button className="button quiet" disabled={busy} onClick={openTypedFollowup}>글로 보충하기</button>
         </>}
-        <button className="button quiet" onClick={() => exportRecords([record])}><Icon name="download" /> Markdown 내보내기</button>
+        <button className="button quiet" onClick={() => exportRecord(record)}><Icon name="download" /> Markdown 내보내기</button>
       </div>
     </div>
     {offerFollowup && <FollowupInvitation issue={followupIssue} prepared={consentAudio} accept={followup} typeAnswer={openTypedFollowup}
@@ -736,12 +740,13 @@ function KeyField({ name, provider, purpose, configured }: {
   </div>;
 }
 
-export function Settings({ health, checked, busy, refresh, save }: {
+export function Settings({ health, checked, busy, refresh, save, voice, changeVoice }: {
   health?: Health; checked: boolean; busy: boolean; refresh: () => void;
   save: (keys: ProviderKeys, resetForm: () => void) => void;
+  voice: AiVoice; changeVoice: (value: AiVoice) => void;
 }) {
   const [inputError, setInputError] = useState('');
-  return <section className="page-stack"><div className="page-heading"><h1>설정</h1></div>
+  return <section className="page-stack" aria-label="설정">
     <div className="summary">
       <div className="section-heading"><h2>API 키</h2><button className="button quiet" onClick={refresh} disabled={busy || !checked}>새로고침</button></div>
       <p role="status">{!checked ? '연결 확인 중…' : health ? '로컬 서버가 연결되어 있습니다.' : '로컬 서버에 연결할 수 없습니다. 서버 실행 창을 확인하세요.'}</p>
@@ -766,6 +771,7 @@ export function Settings({ health, checked, busy, refresh, save }: {
         <p className="muted">표시된 상태는 키가 설정됐는지를 알려줍니다. 키의 유효성과 서비스 연결은 해당 기능을 실행할 때 확인됩니다.</p>
       </form>
     </div>
+    <VoiceSettings voice={voice} change={changeVoice} disabled={busy} canPreview={!!health?.providers.live} />
     <p className="muted">원문과 요약은 로컬 PC에 저장됩니다. 웹앱과 데스크톱 앱은 기록을 따로 보관하며, 다른 브라우저와도 자동으로 동기화되지 않습니다.</p>
   </section>;
 }

@@ -26,6 +26,7 @@ test('asks at launch, downloads only on consent, and checks again in settings', 
     await expect(page.getByRole('button', {name:'업데이트 다운로드'})).toBeHidden();
     expect(await page.evaluate(() => window.updateEvidence())).toEqual({checks:1, downloads:0, opens:0});
     await page.getByRole('button', {name:'설정', exact:true}).click();
+    await expect(page.getByRole('heading', {name:'설정', exact:true})).toHaveCount(0);
     await page.getByRole('button', {name:'업데이트 확인', exact:true}).click();
     await page.getByRole('button', {name:'업데이트 다운로드'}).click();
     await expect(page.getByText(/다운로드와 파일 검증을 마쳤습니다/)).toBeVisible();

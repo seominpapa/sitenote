@@ -2,15 +2,19 @@ import * as SecureStore from 'expo-secure-store';
 import { fetch } from 'expo/fetch';
 import { TYPED_QUESTION_LIMIT, typedJudgeRequest, typedQuestionRequest, type TypedVerdict } from './typedFollowup';
 import { compactParts, draftContext, type Connection } from './workflow';
+import { isAiVoice, type AiVoice } from '../server/voices.mjs';
+import { readVoicePreview } from './voice-preview';
 
 const settingsKey = 'sitenote.connection.v1';
-export type Settings = Partial<Connection> & {keepAudio?: boolean};
+export type Settings = Partial<Connection> & {keepAudio?: boolean; voice?: AiVoice};
 export type Health = {ok: true; providers: {live: boolean; soniox: boolean; text: boolean}};
 export type Summary = {markdown: string; questions: string[]};
 
 export async function loadSettings(): Promise<Settings> {
   const raw = await SecureStore.getItemAsync(settingsKey);
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  const stored = JSON.parse(raw);
+  return {...stored, voice:isAiVoice(stored?.voice) ? stored.voice : undefined};
 }
 
 export async function saveSettings(settings: Settings) {
@@ -40,6 +44,13 @@ async function request<T>(connection: Connection, path: string, body?: object): 
 }
 
 export const health = (c: Connection) => request<Health>(c, '/health');
+export async function fetchVoicePreview(connection: Connection, voice: AiVoice, signal: AbortSignal) {
+  const response = await fetch(connection.url + '/v1/voice-preview', {
+    method:'POST', redirect:'error', signal,
+    headers:{Authorization:'Bearer ' + connection.token, 'Content-Type':'application/json'}, body:JSON.stringify({voice}),
+  });
+  return readVoicePreview(response);
+}
 export const answer = (c: Connection, question: string, context: string, history?: string) =>
   request<{answer: string}>(c, '/answer', {question, context, history});
 

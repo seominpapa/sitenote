@@ -59,7 +59,7 @@ export async function providerText(options, {instructions, input, maxTokens, sch
 export async function textResult(path, data, options) {
   const summary = path === '/summary';
   const output = await providerText(options, {
-    instructions: summary ? summaryInstructions : useSources + ' 질문에 한국어로 답한다. 기록에서 못 찾은 내용은 찾지 못했다고 표시한다. 일반적인 설명·조언은 새 제안으로 표시한다. 이전 질문 맥락은 지칭을 이해하는 데만 사용한다.',
+    instructions: summary ? summaryInstructions + ' 발언자를 표시할 때 speaker의 화자 번호를 이름 대신 그대로 쓰고, 같은 줄에 그 사람의 발언 식별자를 붙인다. 번호가 같아도 근거 없이 같은 사람으로 단정하지 않는다.' : useSources + ' 질문에 한국어로 답한다. 기록에서 못 찾은 내용은 찾지 못했다고 표시한다. 일반적인 설명·조언은 새 제안으로 표시한다. 이전 질문 맥락은 지칭을 이해하는 데만 사용한다.',
     input: summary
       ? { kind: data.kind, source: data.context }
       : { question: data.question, source: data.context, history: data.history },

@@ -1,4 +1,5 @@
 import { isOriginalSourceRef, type Turn } from '../records/core.ts';
+import type { AiVoice } from '../../server/voices.mjs';
 import { liveTranscript, sonioxTranscript, type LiveEvent, type SonioxToken } from './transcript.ts';
 
 export type Mode = 'meeting' | 'personal' | 'followup';
@@ -45,6 +46,7 @@ type Options = {
   baseUrl: string;
   token: string;
   mode: Mode;
+  voice?: AiVoice;
   audio: Audio;
   persist(turn: Turn): Promise<void>;
   search(query: string): Promise<string>;
@@ -414,7 +416,8 @@ export function createVoiceSession(options: Options) {
     };
     const sendStart = () => {
       if (socket !== current || endTask || finishTask) return;
-      if (!send({type:'start',mode,timeMs:time(),...(onDemand ? {} : {context:options.getContext()})},current)) {
+      if (!send({type:'start',mode,timeMs:time(),...(options.voice ? {voice:options.voice} : {}),
+        ...(onDemand ? {} : {context:options.getContext()})},current)) {
         endUnexpected(disconnected,'disconnected');
       } else startedSocket = current;
     };

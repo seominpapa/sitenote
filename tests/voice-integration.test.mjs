@@ -32,8 +32,10 @@ test('voice controller, authenticated server and storage agree on meeting questi
         send(data) {
           this.frames.push(data);
           if (data === '') queueMicrotask(() => this.event({finished: true}));
-          if (typeof data === 'string' && data.startsWith('{"type":"session.update"'))
-            queueMicrotask(() => this.event({type:'session.updated'}));
+          if (typeof data === 'string' && data.startsWith('{"type":"session.start"'))
+            queueMicrotask(() => this.event({type:'session.started'}));
+          if (typeof data === 'string' && data.startsWith('{"type":"session.close"'))
+            queueMicrotask(() => this.event({type:'session.closed',reason:'close_requested'}));
         },
         event(data) { this.emit('message', JSON.stringify(data)); },
         close() { this.readyState = 3; this.emit('close'); },
@@ -60,7 +62,7 @@ test('voice controller, authenticated server and storage agree on meeting questi
   let played = 0;
   let ws;
   const session = createVoiceSession({
-    baseUrl:'http://127.0.0.1:' + server.address().port, token, mode:'meeting',
+    baseUrl:'http://127.0.0.1:' + server.address().port, token, mode:'meeting', voice:'cedar',
     connect: (url, accessToken) => { ws = new WebSocket(url, {headers:{Authorization:'Bearer ' + accessToken}}); return ws; },
     timeMs: () => 0, getContext: () => '', search: async query => { searches.push(query); return ''; },
     persist: async turn => { record = applyTurn(record, turn); await store.save(record); },
@@ -75,19 +77,23 @@ test('voice controller, authenticated server and storage agree on meeting questi
   await until(() => session.getSnapshot().phase === 'recording');
   assert.equal(providers.length, 1);
   await session.ask();
-  await until(() => providers[1]?.frames.length > 0 && session.getSnapshot().phase === 'question' && session.getSnapshot().liveReady);
+  await until(() => session.getSnapshot().phase === 'question' && session.getSnapshot().liveReady);
+  assert.equal(providers.length, 1, 'voice invitation stays local until a confirmed question');
   audio.emit('onAudio', {audio: pcm});
   await until(() => providers[0].frames.some(Buffer.isBuffer));
   providers[0].event({tokens:[{text:'변경된 납기는?', start_ms:10, end_ms:50, speaker:'1', is_final:true}, {text:'<end>',is_final:true}]});
-  const realtime = providers[1];
-  const records = (type) => realtime.frames.map(raw => JSON.parse(raw)).filter(message=>message.type === type);
-  await until(() => records('response.create').length === 1);
+  await until(() => providers.length === 2);
+  const live = providers[1];
+  const records = (type) => live.frames.map(raw => JSON.parse(raw)).filter(message=>message.type === type);
+  await until(() => records('session.input_audio.append').length > 0);
   assert.deepEqual(searches, ['변경된 납기는?']);
-  assert.equal(records('conversation.item.create')[0].item.content[0].text, '변경된 납기는?');
-  realtime.event({type:'response.created',response:{id:'voice-fixture'}});
-  realtime.event({type:'response.output_audio.delta',response_id:'voice-fixture',delta:pcm,event_id:'audio-fixture'});
-  realtime.event({type:'response.output_audio_transcript.delta',response_id:'voice-fixture',delta:'일정이 5월 20일로 바뀌었습니다.',event_id:'output-fixture'});
-  realtime.event({type:'response.done',response:{id:'voice-fixture',status:'completed'}});
+  assert.equal(live.url, 'wss://api.openai.com/v1/live/sessions');
+  const config = records('session.start')[0].session;
+  assert.equal(config.model, 'gpt-live-1.1');
+  assert.equal(config.audio.output.voice, 'cedar');
+  assert.equal(config.input.filter(item => item.role === 'user').at(-1).content[0].text, '변경된 납기는?');
+  live.event({type:'session.output_audio.delta',delta:pcm,event_id:'audio-fixture'});
+  live.event({type:'session.output_transcript.delta',delta:'일정이 5월 20일로 바뀌었습니다.',event_id:'output-fixture',start_ms:10,end_ms:70});
   await until(() => played === 1 && record.turns.length === 2);
   await session.leave();
   assert.deepEqual(await session.finish(), {flushed:true,saved:true});

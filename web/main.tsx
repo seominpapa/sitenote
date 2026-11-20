@@ -11,6 +11,7 @@ import { Icon, type Jump } from './ui.tsx';
 import { categoryBatchLimit, Detail, RecordList, Search, Settings, StartCards, type LibraryView, Voice } from './views.tsx';
 import { applyCategories, deleteRecords, exportRecords, loadCategoryUndo, loadFolders, records, sameCategory, saveFolders, undoCategories, watchLibrary, type CategoryUndoEntry } from './store.ts';
 import { prepareVoiceConsent, type ConsentAudio } from './voice-consent.ts';
+import { loadAiVoice, saveAiVoice } from './voice-settings.tsx';
 import './style.css';
 
 type Session = ReturnType<typeof createVoiceSession>;
@@ -53,6 +54,7 @@ function App() {
   const [folders, setFolders] = useState<string[][]>([]);
   const [categoryUndo, setCategoryUndo] = useState<CategoryUndoEntry[]>([]);
   const [libraryView, setLibraryView] = useState<LibraryView>('date');
+  const [aiVoice, setAiVoice] = useState(loadAiVoice);
   const [editorVersion, setEditorVersion] = useState(0);
   const current = useRef<RecordData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -247,7 +249,7 @@ function App() {
         const latest = () => current.current.find(item => item.id === record.id) ?? record;
         let previousQuery = '';
         const session = createVoiceSession({
-          baseUrl: location.origin, token: '', mode, audio,
+          baseUrl: location.origin, token: '', mode, audio, voice: aiVoice,
           connect: url => new WebSocket(url) as unknown as ReturnType<NonNullable<Parameters<typeof createVoiceSession>[0]['connect']>>,
           timeMs: () => Math.max(0, Date.now() - Date.parse(record.createdAt)),
           getContext: () => liveContext(latest(), mode === 'followup').context,
@@ -392,8 +394,8 @@ function App() {
   function exportLibrary() {
     void run(async () => {
       const fresh = await records.list();
-      if (fresh.length) exportRecords(fresh);
-      else setNotice('내보낼 기록이 없습니다.');
+      exportRecords(fresh);
+      setNotice('');
     });
   }
 
@@ -499,7 +501,11 @@ function App() {
           evidence={snapshot.phase === 'processing' ? [] : evidence} finish={finish} busy={busy} aiAvailable={!!connected?.providers.live} readMeter={active.audio.readMeter}
           withAudio={action => void run(async () => { await active.audio.unlock(); await action(); })} />
           : page.name === 'search' ? <Search records={list} online={!!connected?.providers.text} ask={lookupAnswer} open={open} />
-          : page.name === 'settings' ? <Settings health={connected} checked={checked} busy={busy} refresh={() => void refresh()} save={saveProviderKeys} />
+          : page.name === 'settings' ? <Settings health={connected} checked={checked} busy={busy} refresh={() => void refresh()} save={saveProviderKeys}
+            voice={aiVoice} changeVoice={voice => {
+              try { saveAiVoice(voice); setAiVoice(voice); setNotice(''); }
+              catch { setNotice('AI 목소리 설정을 저장하지 못했습니다.'); }
+            }} />
           : page.name === 'detail' && record ? <Detail key={`${record.id}:${editorVersion}`} record={record} part={page.part} busy={busy}
             related={evidence}
             open={open} back={() => navigate({ name: 'home' })} summarize={() => void run(() => saveSummary(record))}

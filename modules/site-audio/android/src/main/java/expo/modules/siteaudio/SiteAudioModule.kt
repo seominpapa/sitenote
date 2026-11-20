@@ -17,6 +17,9 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Base64
+import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Queues
+import expo.modules.kotlin.jni.ArrayBuffer
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.nio.ByteBuffer
@@ -48,6 +51,7 @@ class SiteAudioModule : Module() {
   private var lastProgress = 0L
   private var playing = false
   private var audibleClock: Double? = null
+  private val preview = VoicePreview()
   private val pendingRender = ArrayDeque<Pair<Long, ShortArray>>()
   private val pump = Runnable {
     synchronized(audioLock) {
@@ -66,10 +70,13 @@ class SiteAudioModule : Module() {
     AsyncFunction("stopCapture") { synchronized(audioLock) { stop() } }
     AsyncFunction("play") { audio: String -> synchronized(audioLock) { enqueue(audio) } }
     AsyncFunction("stopPlayback") { synchronized(audioLock) { stopOutput() } }
+    AsyncFunction("playPreview") { wave: ArrayBuffer, promise: Promise -> preview.play(wave, promise) }.runOnQueue(Queues.MAIN)
+    AsyncFunction("stopPreview") { preview.stop() }.runOnQueue(Queues.MAIN)
     AsyncFunction("writeTextAtomic") { uri: String, text: String ->
       AudioFiles.writeText(appContext.persistentFilesDirectory, uri, text)
     }
     OnActivityEntersBackground {
+      preview.stop()
       synchronized(audioLock) {
         if (capture != null) {
           stop()
@@ -78,6 +85,7 @@ class SiteAudioModule : Module() {
       }
     }
     OnDestroy {
+      Handler(android.os.Looper.getMainLooper()).post { preview.stop() }
       synchronized(audioLock) { stop() }
       outputThread.quitSafely()
     }

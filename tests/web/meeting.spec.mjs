@@ -88,15 +88,15 @@ test('answers only finalized meeting questions, then advances followup after a c
   let releaseSummary;
   const slowSummary = new Promise(resolve => { releaseSummary = resolve; });
   let meetingFrames = 0;
+  let followupSessions = 0;
+  let questionSessions = 0;
   let liveConnections = 0;
-  let realtimeConnections = 0;
   let sonioxConnections = 0;
   let releaseFirstEndpoint;
   let rememberLateUtterance;
   let playbackSpeechFrames = 0;
   const forwardedQuestions = [];
-  const requestedAnswers = [];
-  const realtimeAudioInput = [];
+  const questionAudioInput = [];
   let meetingFlushed = false;
   let followupFinalized = false;
   let followupSonioxFinalized = false;
@@ -177,46 +177,48 @@ test('answers only finalized meeting questions, then advances followup after a c
           }
         }, connection === 2 ? 950 : 0);
       }
-      if (provider.pathname === '/v1/realtime') {
-        realtimeConnections++;
-        let question;
-        return fakeSocket((data, reply) => {
-          const message = JSON.parse(data);
-          if (message.type === 'session.update') reply({type:'session.updated', session:{type:'realtime'}});
-          if (message.type === 'input_audio_buffer.append' || message.type === 'session.input_audio.append') realtimeAudioInput.push(message.type);
-          if (message.type === 'conversation.item.create' && message.item?.role === 'user') {
-            question = message.item.content?.find(part => part.type === 'input_text')?.text;
-            forwardedQuestions.push(question);
-          }
-          if (message.type !== 'response.create') return;
-          requestedAnswers.push(question);
-          const index = requestedAnswers.length - 1;
-          if (question !== questions[index] || index >= questions.length) return;
-          const response = {id:`meeting-response-${index}`, metadata:message.response?.metadata};
-          reply({type:'response.created', response});
-          reply({type:'response.output_audio.delta', event_id:`meeting-audio-${index}`, response_id:response.id, delta:audioEvent.delta});
-          reply({type:'response.output_audio_transcript.delta', event_id:`meeting-text-${index}`, response_id:response.id, delta:[aiReply, secondAiReply][index]});
-          reply({type:'response.done', response:{...response, status:'completed'}});
-        });
-      }
-      const connection = ++liveConnections;
+      expect(provider.pathname).toBe('/v1/live/sessions');
+      liveConnections++;
+      let followupConnection = 0;
       let realFrames = 0;
       return fakeSocket((data, reply) => {
         const message = JSON.parse(data);
-        if (message.type === 'session.start') reply({type: 'session.started'});
+        if (message.type === 'session.start') {
+          expect(message.session.model).toBe('gpt-live-1.1');
+          expect(message.session.audio.output.voice).toBe('noeul');
+          reply({type:'session.started'});
+          if (message.session.instructions.startsWith('종료된 회의')) {
+            followupConnection = ++followupSessions;
+          } else {
+            const question = message.session.input.filter(item => item.role === 'user').at(-1)?.content[0].text;
+            const index = questionSessions++;
+            forwardedQuestions.push(question);
+            if (question !== questions[index] || index >= questions.length) return;
+            reply({ ...audioEvent, event_id:`meeting-audio-${index}` });
+            reply({
+              type:'session.output_transcript.delta', event_id:`meeting-text-${index}`, delta:[aiReply, secondAiReply][index],
+              start_ms:10, end_ms:100,
+            });
+          }
+          return;
+        }
         if (message.type === 'session.close') {
-          if (connection === 2) followupFinalized = true;
-          reply({type: 'session.closed', reason: 'close_requested'});
+          if (followupConnection === 2) followupFinalized = true;
+          return reply({type:'session.closed', reason:'close_requested'});
+        }
+        if (!followupConnection) {
+          if (message.type === 'session.input_audio.append') questionAudioInput.push(message.audio);
+          return;
         }
         if (message.type !== 'session.input_audio.append') return;
-        if (++realFrames === 1 && connection === 1) {
+        if (++realFrames === 1 && followupConnection === 1) {
           for (const delta of paddedFollowup) reply(delta);
           reply({type: 'session.output_transcript.delta', delta: followupQuestion, start_ms: 20, end_ms: 150, event_id: 'followup-question'});
         }
-        if (connection === 1 && realFrames === 15) {
+        if (followupConnection === 1 && realFrames === 15) {
           reply({type: 'session.input_transcript.delta', delta: redundantGptTranscript, start_ms: 1000, end_ms: 1350, event_id: 'followup-duplicate'});
         }
-        if (connection === 2 && realFrames === 1) {
+        if (followupConnection === 2 && realFrames === 1) {
           reply(audioEvent);
           reply({type:'session.output_transcript.delta', delta:nextFollowupQuestion, start_ms:20, end_ms:150, event_id:'followup-next'});
         }
@@ -306,6 +308,9 @@ test('answers only finalized meeting questions, then advances followup after a c
     });
     await page.goto('http://127.0.0.1:' + server.address().port);
     await expect(page.getByText('로컬 서버 연결됨')).toBeVisible();
+    await page.getByRole('button', {name:'설정',exact:true}).click();
+    await page.getByRole('combobox', {name:'AI 목소리'}).selectOption('noeul');
+    await page.getByRole('button', {name:'Sitenote 홈'}).click();
     await page.getByLabel('회의 제목', {exact: true}).fill(title);
     await page.getByLabel('회의 프로젝트').fill('새 현장');
     await page.getByRole('button', {name: '회의 시작'}).click();
@@ -313,15 +318,15 @@ test('answers only finalized meeting questions, then advances followup after a c
     await expect(page.getByTestId('voice-meter')).toHaveAttribute('data-signal', 'audible');
     await expect(page.getByTestId('ai-panel')).toContainText('대기 중');
     expect(meetingFrames).toBeGreaterThan(0);
-    expect(liveConnections).toBe(0);
-    expect(realtimeConnections).toBe(0);
+    expect(followupSessions).toBe(0);
+    expect(questionSessions).toBe(0);
     await page.getByRole('button', {name: 'AI에게 질문'}).click();
     await expect(page.getByTestId('ai-panel')).toContainText('질문 듣는 중');
     await page.evaluate(() => window.speakTestMic(0.1));
     await expect(page.getByTestId('transcript-turn').filter({hasText: questionPrefix})).toBeVisible();
     await expect(page.getByTestId('ai-panel')).toContainText('질문 듣는 중');
+    expect(liveConnections).toBe(0);
     expect(forwardedQuestions).toEqual([]);
-    expect(requestedAnswers).toEqual([]);
     expect(await page.evaluate(() => window.playedAnswers)).toBe(0);
     releaseFirstEndpoint();
     await expect(page.getByTestId('ai-panel')).toContainText('답변 재생 중');
@@ -334,7 +339,6 @@ test('answers only finalized meeting questions, then advances followup after a c
     await expect(page.getByTestId('ai-panel')).toContainText('질문 듣는 중');
     await expect(page.getByTestId('transcript-turn').filter({hasText: secondAiReply})).toHaveCount(0);
     expect(forwardedQuestions).toEqual([questions[0]]);
-    expect(requestedAnswers).toEqual([questions[0]]);
     expect(playbackSpeechFrames).toBe(0);
     await expect(page.getByTestId('transcript-turn').filter({hasText: playbackSpeech})).toHaveCount(0);
     deliverLateUtterance();
@@ -344,15 +348,15 @@ test('answers only finalized meeting questions, then advances followup after a c
     await expect(page.getByTestId('transcript-turn').filter({hasText:secondAiReply})).toContainText('질의응답');
     await expect.poll(() => page.evaluate(() => window.playedAnswers)).toBe(2);
     expect(forwardedQuestions).toEqual(questions);
-    expect(requestedAnswers).toEqual(questions);
-    expect(realtimeAudioInput).toEqual([]);
+    expect(questionAudioInput.length).toBeGreaterThan(0);
+    expect(questionAudioInput.every(raw => Buffer.from(raw,'base64').every(byte => byte === 0))).toBe(true);
     for (const question of questions) {
       const source = page.getByTestId('transcript-turn').filter({hasText: question});
       await expect(source).toHaveCount(1);
       await expect(source).toContainText('화자 1');
     }
-    expect(realtimeConnections).toBe(1);
-    expect(liveConnections).toBe(0);
+    expect(questionSessions).toBe(2);
+    expect(followupSessions).toBe(0);
     await page.getByRole('button', {name: 'AI 질문 닫기'}).click();
     await expect(page.getByTestId('voice-status')).toContainText('회의 전사 중');
     await page.getByRole('button', {name: '녹음 종료'}).click();
@@ -360,7 +364,7 @@ test('answers only finalized meeting questions, then advances followup after a c
     await expect(page.getByTestId('transcript-turn').filter({hasText: lastTurn})).toContainText('화자 2');
     expect(meetingFlushed).toBe(true);
     await expect(page.getByRole('heading', {name: 'AI 보충 질문을 시작할까요?'})).toBeVisible();
-    expect(liveConnections).toBe(0);
+    expect(followupSessions).toBe(0);
     await expect.poll(() => page.evaluate(() => window.consentAudit.ended)).toBe(true);
     expect(await page.evaluate(() => window.consentAudit)).toMatchObject({
       micStartedBeforePrompt:true, socketStartedBeforePrompt:true, readyBeforePrompt:true, nonzeroBeforeEnd:0,

@@ -30,16 +30,18 @@ for (const { kind, label, completeOnServer } of [
       openaiKey: 'test-only',
       sonioxKey: 'test-only',
       upstream(url) {
-        const soniox = new URL(url).hostname === 'stt-rt.soniox.com';
+        const provider = new URL(url);
+        const soniox = provider.hostname === 'stt-rt.soniox.com';
+        if (!soniox) expect(provider.pathname).toBe('/v1/live/sessions');
         const connection = soniox ? ++sttConnections : ++aiConnections;
         let audioMs = 0;
         let start = 0;
         let utterance = 0;
         let voiced = 0;
         let quiet = 0;
-        let firstResponse;
+        let firstResponseStarted = false;
         const socket = Object.assign(new EventEmitter(), {
-          readyState: 1, bufferedAmount: 0,
+          readyState: 0, bufferedAmount: 0,
           send(raw) {
             if (soniox) {
               if (!Buffer.isBuffer(raw) || raw.length !== 960) return;
@@ -60,37 +62,39 @@ for (const { kind, label, completeOnServer } of [
               return;
             }
             const data = JSON.parse(raw);
-            if (data.type === 'session.update') {
-              if (connection === 1) emit({type:'session.updated'});
-              else setTimeout(() => emit({type:'session.updated'}), 330);
-            }
-            if (data.type === 'conversation.item.create') forwarded.push(data.item.content[0].text);
-            if (data.type !== 'response.create') return;
-            const response = {id:`reply-${connection}`, metadata:data.response.metadata};
-            if (connection === 1) firstResponse = response.id;
-            emit({type:'response.created', response});
+            if (data.type === 'session.close') return emit({type:'session.closed', reason:'close_requested'});
+            if (data.type !== 'session.start') return;
+            expect(data.session.model).toBe('gpt-live-1.1');
+            forwarded.push(data.session.input.filter(item => item.role === 'user').at(-1).content[0].text);
+            if (connection === 1) firstResponseStarted = true;
+            emit({type:'session.started'});
             const audio = connection === 1 ? render : render.subarray(0, 9_600);
             for (let i = 0; i < audio.length; i += 24_000) {
-              emit({type:'response.output_audio.delta', event_id:`audio-${i}`, response_id:response.id,
+              emit({type:'session.output_audio.delta', event_id:`audio-${i}`,
                 delta:audio.subarray(i,i + 24_000).toString('base64')});
             }
-            emit({type:'response.output_audio_transcript.delta', event_id:'text', response_id:response.id,
-              delta:connection === 1 ? ongoing : next});
-            if (connection > 1 || completeOnServer) emit({type:'response.done',response:{...response,status:'completed'}});
+            emit({type:'session.output_transcript.delta', event_id:'text',
+              delta:connection === 1 ? ongoing : next, start_ms:10,end_ms:100});
           },
           close() {
             if (this.readyState === 3) return;
             this.readyState = 3;
-            if (!soniox && firstResponse) {
+            if (!soniox && firstResponseStarted) {
               previousReplyClosed = true;
-              emit({type:'response.output_audio_transcript.delta', event_id:'late', response_id:firstResponse, delta:stale});
+              emit({type:'session.output_transcript.delta', event_id:'late', delta:stale, start_ms:140,end_ms:160});
             }
             this.emit('close');
           },
           terminate() { this.close(); },
         });
         const emit = data => queueMicrotask(() => socket.emit('message', JSON.stringify(data)));
-        queueMicrotask(() => socket.emit('open'));
+        const open = () => {
+          if (socket.readyState !== 0) return;
+          socket.readyState = 1;
+          socket.emit('open');
+        };
+        if (!soniox && connection > 1) setTimeout(open,330).unref();
+        else queueMicrotask(open);
         return socket;
       },
     });
@@ -139,6 +143,8 @@ for (const { kind, label, completeOnServer } of [
       }))).toBe(false);
       expect(echoFrames).toBe(0);
       await expect(page.getByTestId('ai-panel')).toContainText('답변 재생 중');
+      // Even after the provider closes on silence, locally queued audio can be interrupted.
+      if (completeOnServer) await expect.poll(() => previousReplyClosed).toBe(true);
       await page.evaluate(() => window.speak(733, .18, .25));
       await expect(firstReply).toContainText('중단', {timeout:1_400});
       expect(await page.evaluate(() => window.stoppedAnswerBeforeEnd)).toBe(true);

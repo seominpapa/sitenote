@@ -13,6 +13,7 @@ import type { SupplementActions } from './ui/Supplement';
 import { SearchPage, SettingsPage, type SearchResult } from './ui/SettingsSearch';
 import { Voice, type VoiceOutcome } from './Voice';
 import type { Mode } from './ui/Active';
+import type { AiVoice } from '../server/voices.mjs';
 
 type DetailRoute = {page: 'detail'; id: string; turnId?: string; from?: 'home'|'search'};
 type Route = {page: 'home'|'settings'|'search'} | DetailRoute | {page: 'voice'; id: string; mode: Mode};
@@ -122,11 +123,21 @@ export default function App() {
       setHealth(undefined);
       const credentials = validateConnection(address, token);
       const check = await health(credentials);
-      await saveSettings({...credentials, keepAudio});
-      setSettings({...credentials, keepAudio});
+      const next = {...settings, ...credentials, keepAudio};
+      await saveSettings(next);
+      setSettings(next);
       setHealth(check);
       setStatus('서버에 연결했고 이 기기에 설정을 저장했습니다.');
     }, '서버에 연결하지 못했습니다.');
+  }
+
+  function changeVoice(voice: AiVoice) {
+    void action(async () => {
+      const next = {...settings, voice};
+      await saveSettings(next);
+      setSettings(next);
+      setStatus(undefined);
+    }, 'AI 목소리 설정을 저장하지 못했습니다.');
   }
 
   async function start(kind: RecordData['kind'], project?: string) {
@@ -230,8 +241,8 @@ export default function App() {
     ]);
   }
 
-  const exportRecords = (selection: RecordData[] | RecordData) =>
-    { void action(() => recordStore.export(selection), '파일을 내보내지 못했습니다.'); };
+  const exportRecord = (record: RecordData) =>
+    { void action(() => recordStore.export(record), '파일을 내보내지 못했습니다.'); };
 
   const detailReferences = (record: RecordData) => {
     const map = new Map<string, () => void>();
@@ -243,21 +254,22 @@ export default function App() {
     resolveOriginalSources(records, record, record.turns.flatMap(turn => turn.sourceRefs ?? []));
 
   const voice = route.page === 'voice' && current && connection ?
-    <Voice key={route.id + route.mode} mode={route.mode} connection={connection} keepAudio={!!settings.keepAudio}
+    <Voice key={route.id + route.mode} mode={route.mode} connection={connection} keepAudio={!!settings.keepAudio} voice={settings.voice}
       record={current} rename={editSpeaker} onDone={finish}
       getRecord={() => list.current.find(item => item.id === current.id) || current} getRecords={() => list.current}
       save={async next => { publish(next); await recordStore.save(next); }}/> : null;
 
   return <Page>
     {booting ? <View style={[styles.content, {paddingTop: 40}]}><ActivityIndicator /><Text style={styles.body}>기록을 여는 중…</Text></View>
-      : voice || (route.page === 'settings' ? <SettingsPage settings={settings} back={back} connect={connect}
+      : voice || (route.page === 'settings' ? <SettingsPage settings={settings} back={back} connect={connect} changeVoice={changeVoice}
         setAudioPreference={keepAudio => { void action(async () => {
           const next = {...settings, keepAudio};
           await saveSettings(next);
           setSettings(next);
           setStatus('음성 사본 설정을 저장했습니다.');
         }, '음성 사본 설정을 저장하지 못했습니다.'); }}
-        exportAll={() => exportRecords(records)} status={status} result={connectionHealth} working={working}/>
+        exportAll={() => { void action(() => recordStore.exportAll(), '파일을 내보내지 못했습니다.'); }}
+        status={status} result={connectionHealth} working={working}/>
       : route.page === 'search' ? <SearchPage back={back} jump={jump} run={runSearch} result={result} working={working} status={status}/>
       : route.page === 'detail' && current ? <Details key={current.id} record={current} focus={route.turnId}
         back={() => { if (!busy.current) back(); }} refs={detailReferences(current)} rename={editSpeaker}
@@ -265,7 +277,7 @@ export default function App() {
           const value = {...current, ...fields, updatedAt: new Date().toISOString()};
           try { await recordStore.save(value); publish(value); setResult(undefined); setStatus('기록을 수정했습니다.'); }
           catch (error) { setStatus(message(error, '기록을 수정하지 못했습니다.')); throw error; }
-        }} remove={() => confirmRemoval(current)} exportOne={() => exportRecords(current)}
+        }} remove={() => confirmRemoval(current)} exportOne={() => exportRecord(current)}
         audioFiles={() => recordStore.audioFiles(current.id)}
         exportAudio={uri => { void action(() => Sharing.shareAsync(uri, {mimeType: 'audio/wav'}), '음성 사본을 내보내지 못했습니다.'); }}
         summary={() => { void makeSummary(current, '원문이 기기에 보관되어 있습니다.'); }}

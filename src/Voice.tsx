@@ -8,10 +8,11 @@ import { recordStore } from './records/expo';
 import { liveContext, resolveOriginalSources, searchPastOriginals } from './recordContext';
 import { Active, type Mode } from './ui/Active';
 import type { Connection } from './workflow';
+import type { AiVoice } from '../server/voices.mjs';
 
 export type VoiceOutcome = {flushed: boolean; saved: boolean};
-export function Voice({mode, connection, keepAudio, record, getRecord, getRecords, save, onDone, rename}: {
-  mode: Mode; connection: Connection; keepAudio: boolean; record: RecordData;
+export function Voice({mode, connection, keepAudio, record, getRecord, getRecords, save, onDone, rename, voice}: {
+  mode: Mode; connection: Connection; keepAudio: boolean; record: RecordData; voice?: AiVoice;
   getRecord: () => RecordData; getRecords: () => RecordData[]; save: (value: RecordData) => Promise<void>;
   onDone: (outcome: VoiceOutcome) => void; rename: (id: string) => void;
 }) {
@@ -21,7 +22,7 @@ export function Voice({mode, connection, keepAudio, record, getRecord, getRecord
   const previousQuery = useRef('');
   const archivePart = useRef(0);
   const [session] = useState(() => createVoiceSession({
-    baseUrl: connection.url, token: connection.token, mode,
+    baseUrl: connection.url, token: connection.token, mode, voice,
     timeMs: () => Math.max(0, Date.now() - Date.parse(record.createdAt)),
     audio: {
       ...SiteAudio,

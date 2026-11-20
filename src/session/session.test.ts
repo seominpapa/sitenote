@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createVoiceSession, type AudioEvents } from './session.ts';
+import type { AiVoice } from '../../server/voices.mjs';
 import type { Turn } from '../records/core.ts';
 
 function setup(mode: 'meeting' | 'personal' | 'followup', overrides: {
   failSave?: boolean; rejectSearch?: boolean; startDelay?: Promise<void>; stopDelay?: Promise<void>; searchDelay?: Promise<string>;
   playReply?: (value: string) => Promise<void>;
+  voice?: AiVoice;
 } = {}) {
   const sockets: Array<ReturnType<typeof fakeSocket>> = [];
   const written = new Map<string, Turn>();
@@ -24,7 +26,7 @@ function setup(mode: 'meeting' | 'personal' | 'followup', overrides: {
     },
   };
   const session = createVoiceSession({
-    baseUrl:'https://sitenote.local', token:'user-token', mode, audio, timeMs:() => now,
+    baseUrl:'https://sitenote.local', token:'user-token', mode, audio, timeMs:() => now, voice:overrides.voice,
     getContext:() => '최근 원문',
     connect(url, token) {
       assert.equal(url, 'wss://sitenote.local/stream');
@@ -444,7 +446,7 @@ test('AI answers persist only valid source refs and verified quoted refs attache
 });
 
 test('pause settles the active stream; resume and reconnect create fresh streams without replay', async () => {
-  const {session,sockets, setTime, mic, native} = setup('followup');
+  const {session,sockets, setTime, mic, native} = setup('followup', {voice:'noeul'});
   session.start();
   sockets[0].open();
   await tick();
@@ -466,7 +468,7 @@ test('pause settles the active stream; resume and reconnect create fresh streams
   await session.resume();
   sockets[1].open();
   await tick();
-  assert.deepEqual(sockets[1].sent,[{type:'start',mode:'followup',timeMs:20_000,context:'최근 원문'}]);
+  assert.deepEqual(sockets[1].sent,[{type:'start',mode:'followup',timeMs:20_000,voice:'noeul',context:'최근 원문'}]);
   sockets[1].io.close();
   assert.equal(session.getSnapshot().phase,'disconnected');
   await session.reconnect();

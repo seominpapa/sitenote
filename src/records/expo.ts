@@ -3,6 +3,8 @@ import * as Sharing from 'expo-sharing';
 import SiteAudio from '../../modules/site-audio/index.ts';
 import { assertId, safeId, type RecordData } from './model.ts';
 import { summaryMarkdown, transcriptMarkdown } from './markdown.ts';
+import { buildNotesExport } from './export.ts';
+import { summaryWithSpeakerNames } from './summary-speakers.ts';
 import { createRecordStore, type FileName } from './store.ts';
 
 const directory = () => new Directory(Paths.document, 'records');
@@ -43,15 +45,21 @@ export const recordStore = {
     return entry.exists ? entry.list().flatMap(item => item instanceof File && audioName.test(item.name) && (item.size ?? 0) > 44
       ? [{ name: item.name, uri: item.uri }] : []) : [];
   },
-  async export(selection: readonly RecordData[] | RecordData): Promise<void> {
+  async export(record: RecordData): Promise<void> {
     if (!await Sharing.isAvailableAsync()) throw Error('이 기기에서 파일을 내보낼 수 없습니다.');
-    const records = 'id' in selection ? [selection] : selection;
-    if (!records.length) throw Error('내보낼 기록이 없습니다.');
     const out = new File(Paths.cache, 'Sitenote-내보내기.md');
     out.create({ overwrite: true });
-    const markdown = records.map(record => `${transcriptMarkdown(record)}${record.summary ?
-      `\n## 요약\n\n${summaryMarkdown(record.summary, record.questions)}` : ''}`).join('\n---\n\n');
-    out.write(markdown);
+    const markdown = `${transcriptMarkdown(record)}${record.summary ?
+      `\n## 요약\n\n${summaryMarkdown(summaryWithSpeakerNames(record) ?? record.summary, record.questions)}` : ''}`;
+    await out.write(markdown);
     await Sharing.shareAsync(out.uri, { mimeType: 'text/markdown', UTI: 'net.daringfireball.markdown', dialogTitle: '기록 내보내기' });
+  },
+  async exportAll(): Promise<void> {
+    if (!await Sharing.isAvailableAsync()) throw Error('이 기기에서 파일을 내보낼 수 없습니다.');
+    const { filename, bytes } = buildNotesExport(await store.list());
+    const out = new File(Paths.cache, filename);
+    out.create({overwrite:true});
+    await out.write(bytes);
+    await Sharing.shareAsync(out.uri, {mimeType:'application/zip', UTI:'public.zip-archive', dialogTitle:'전체 내보내기'});
   },
 };

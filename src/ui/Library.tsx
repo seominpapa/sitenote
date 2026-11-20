@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import { Pressable, ScrollView, Switch, Text, View } from 'react-native';
 import { speakerGroups, speakerLabel as recordSpeakerLabel, type Evidence, type RecordData, type Turn } from '../records/core';
+import { summaryWithSpeakerNames } from '../records/summary-speakers';
 import { currentQuotedRefs } from '../recordContext';
 import { citationParts } from '../workflow';
 import { Button, color, Field, Header, Notice, styles } from './base';
@@ -196,7 +197,7 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
       {status && <Notice text={status}/>}
       <SpeakerNames record={record} working={working} rename={rename}/>
       {tab === 'summary' ? <View style={styles.card}>
-        {record.summary ? <RichText value={record.summary} refs={refs}/> : <Text style={styles.body}>저장된 요약이 없습니다.</Text>}
+        {record.summary ? <RichText value={summaryWithSpeakerNames(record) ?? record.summary} refs={refs}/> : <Text style={styles.body}>저장된 요약이 없습니다.</Text>}
         {!!record.questions?.length && <><Text style={styles.heading}>확인할 사항</Text>{record.questions.map((question, index) =>
           <Text key={index} style={styles.body}>• {question}</Text>)}</>}
         <View style={styles.row}>

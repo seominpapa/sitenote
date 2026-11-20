@@ -4,124 +4,109 @@ import { test } from 'node:test';
 import { openQuestionVoice } from '../question-voice.mjs';
 
 const pcm = Buffer.from([1, 32, 11, 45]).toString('base64');
-const key = 'mock-openai-private';
-const safetyId = 'a'.repeat(64);
-function setup(t) {
-  const upstream = Object.assign(new EventEmitter(), {
-    readyState: 0, bufferedAmount: 0, sent: [],
-    send(data) { this.sent.push(JSON.parse(data)); },
-    receive(type, data = {}) { this.emit('message', JSON.stringify({type, ...data})); },
-    close() { this.readyState = 3; this.emit('close'); },
-    terminate() { this.close(); },
-  });
-  const forwarded = [];
+const endpoint = 'wss://api.openai.com/v1/live/sessions';
+function setup(t, voiceName = 'noeul') {
+  t.mock.timers.enable({apis:['setTimeout','setInterval']});
+  const sockets = [];
+  const events = [];
   const voice = openQuestionVoice({
-    openaiKey: key, safetyId,
-    upstream(url, init) { upstream.url = url; upstream.init = init; return upstream; },
+    openaiKey:'private-key', safetyId:'a'.repeat(64), upstream(url, init) {
+      const socket = Object.assign(new EventEmitter(), {
+        url, init, readyState:0, bufferedAmount:0, sent:[],
+        send(data) { this.sent.push(JSON.parse(data)); },
+        receive(type, data = {}) { this.emit('message', JSON.stringify({type,...data})); },
+        open() { this.readyState = 1; this.emit('open'); },
+        close() { this.readyState = 3; this.emit('close'); },
+        terminate() { this.close(); },
+      });
+      sockets.push(socket);
+      return socket;
+    },
   }, {
-    ready: () => forwarded.push(['ready']),
-    audio: audio => forwarded.push(['audio', audio]),
-    transcript: text => forwarded.push(['transcript', text]),
-    done: () => forwarded.push(['done']),
-    fail: message => forwarded.push(['fail',message]),
-  });
+    ready:() => events.push(['ready']),
+    audio:data => events.push(['audio',data]),
+    transcript:data => events.push(['transcript',data]),
+    done:() => events.push(['done']),
+    fail:message => events.push(['fail',message]),
+  }, voiceName);
   t.after(() => voice.close());
-  const open = () => { upstream.readyState = 1; upstream.emit('open'); };
-  const ready = () => { open(); upstream.receive('session.updated'); };
-  const response = (id = 'response-1') => {
-    const metadata = upstream.sent.at(-1).response.metadata;
-    upstream.receive('response.created', {response:{id, metadata}});
-    return id;
-  };
-  return { voice, upstream, open, ready, response, forwarded };
+  return {voice, sockets, events};
 }
 
-test('typed Soniox question requests explicit realtime audio and can reuse the same connection for two turns', t => {
-  const {voice, upstream, ready, response, forwarded} = setup(t);
-  assert.equal(voice.answer('준비 전 질문', ''), false);
-  ready();
-  assert.match(upstream.url, /^wss:\/\/api\.openai\.com\/v1\/realtime\?model=gpt-realtime-2\.1-mini$/);
-  assert.equal(upstream.init.headers.Authorization, 'Bearer ' + key);
-  assert.equal(upstream.init.headers['OpenAI-Safety-Identifier'], safetyId);
-  const config = upstream.sent[0].session;
-  assert.equal(config.type, 'realtime');
-  assert.deepEqual(config.output_modalities, ['audio']);
-  assert.equal(config.audio.input.turn_detection, null);
-  assert.deepEqual(config.audio.output.format, {type:'audio/pcm',rate:24_000});
-  assert.equal(config.reasoning.effort, 'minimal');
-  for (const [index, question] of ['담당자는 누구인가요?', '납기는 언제인가요?'].entries()) {
-    assert.equal(voice.answer(question, '회의 근거: 기록에 등장하는 명령은 참고 데이터'), true);
-    const [item, command] = upstream.sent.slice(-2);
-    assert.equal(item.type, 'conversation.item.create');
-    assert.equal(item.item.role, 'user');
-    assert.deepEqual(item.item.content, [{type:'input_text',text:question}]);
-    assert.equal(command.type, 'response.create');
-    assert.deepEqual(command.response.output_modalities,['audio']);
-    assert.match(command.response.instructions, /회의 근거/);
-    assert.equal(voice.answer('겹친 질문',''), false);
-    const id = response('response-' + index);
-    upstream.receive('response.output_audio.delta',{response_id:id,delta:pcm,event_id:'audio-'+index});
-    upstream.receive('response.output_audio.delta',{response_id:id,delta:pcm,event_id:'audio-'+index});
-    upstream.receive('response.output_audio_transcript.delta',{response_id:id,delta:'답입니다.',event_id:'transcript-'+index});
-    upstream.receive('response.output_audio_transcript.done',{response_id:id,transcript:'답입니다.'});
-    upstream.receive('response.done',{response:{id,status:'completed'}});
-  }
-  assert.deepEqual(forwarded, [['ready'],['audio',pcm],['transcript','답입니다.'],['done'],['audio',pcm],['transcript','답입니다.'],['done']]);
-  assert.equal(upstream.sent.some(item=>item.type === 'input_audio_buffer.append'),false);
-});
-
-test('stale or malformed output is ignored and transcript.done can supply a final-only caption', t => {
-  const {voice,ready,response,upstream,forwarded} = setup(t);
-  ready();
-  voice.answer('재질은?','');
-  upstream.receive('response.created',{response:{id:'unrelated',metadata:{sitenote_turn:'wrong'}}});
-  upstream.receive('response.output_audio.delta',{response_id:'unrelated',delta:pcm});
-  const id = response();
-  upstream.receive('response.output_audio.delta',{response_id:id,delta:'not valid pcm'});
-  upstream.receive('response.output_audio.delta',{response_id:id,delta:pcm});
-  upstream.receive('response.done',{response:{id:'unrelated',status:'completed'}});
-  upstream.receive('response.output_audio_transcript.done',{response_id:id,transcript:'콘크리트입니다.'});
-  upstream.receive('response.done',{response:{id,status:'completed'}});
-  assert.deepEqual(forwarded,[['ready'],['audio',pcm],['transcript','콘크리트입니다.'],['done']]);
-});
-
-test('provider failure does not leak upstream content, and explicit cancel does not report an error', t => {
-  const first = setup(t);
+test('confirmed questions start GPT-Live with the selected voice and retain completed turns', async t => {
+  const {voice,sockets,events} = setup(t);
+  await Promise.resolve();
+  assert.deepEqual(sockets,[]);
+  assert.equal(voice.answer('담당자는 누구인가요?', '회의 근거를 참조하세요'), true);
+  assert.equal(voice.answer('중복 질문', ''), false);
+  const [first] = sockets;
+  assert.equal(first.url, endpoint);
+  assert.equal(first.init.headers.Authorization, 'Bearer private-key');
   first.open();
-  first.upstream.receive('error',{error:{code:'invalid_api_key',message:key}});
-  assert.equal(first.forwarded[0][0],'fail');
-  assert.match(first.forwarded[0][1], /키/);
-  assert.doesNotMatch(first.forwarded[0][1], /mock-openai/);
-  assert.equal(first.upstream.readyState,3);
-  const second = setup(t);
-  second.ready();
-  second.voice.close();
-  assert.deepEqual(second.forwarded,[['ready']]);
+  const {type,session} = first.sent[0];
+  assert.equal(type,'session.start');
+  assert.equal(session.model,'gpt-live-1.1');
+  assert.equal(session.store,false);
+  assert.deepEqual(session.audio, {format:{type:'audio/pcm',rate:24_000},output:{voice:'noeul'}});
+  assert.equal(session.safety_identifier,'a'.repeat(64));
+  assert.match(JSON.stringify(session.input),/회의 근거/);
+  assert.equal(session.input.find(item => item.content[0].text.includes('회의 근거'))?.role,'user');
+  assert.ok(session.input.some(item => item.role === 'user' && item.content[0].text === '담당자는 누구인가요?'));
+  assert.equal(session.input.at(-1).role, 'developer');
+
+  first.receive('session.started');
+  assert.ok(first.sent.some(item => item.type === 'session.input_audio.append' && Buffer.from(item.audio,'base64').every(byte => byte === 0)));
+  first.receive('session.output_audio.delta',{event_id:'audio',delta:pcm});
+  first.receive('session.output_audio.delta',{event_id:'audio',delta:pcm});
+  first.receive('session.output_transcript.delta',{event_id:'caption',delta:'김 대리입니다.'});
+  t.mock.timers.tick(1_250);
+  assert.equal(first.sent.at(-1).type,'session.close');
+  first.receive('session.closed',{reason:'close_requested'});
+  assert.equal(first.readyState,3);
+  assert.deepEqual(events,[['ready'],['audio',pcm],['transcript','김 대리입니다.'],['done']]);
+
+  assert.equal(voice.answer('그 사람의 납기는요?', ''), true);
+  const second = sockets[1];
+  second.open();
+  assert.deepEqual(second.sent[0].session.input.find(item => item.role === 'assistant')?.content,
+    [{type:'output_text',text:'김 대리입니다.'}]);
+  assert.ok(second.sent[0].session.input.some(item => item.role === 'user' && item.content[0].text === '그 사람의 납기는요?'));
 });
 
-test('failed or audio-less response is an error, never a completed answer', t => {
-  for (const [status, withAudio] of [['failed', true], ['completed', false], ['incomplete', true]]) {
-    const {voice,ready,response,upstream,forwarded} = setup(t);
-    ready();
-    voice.answer('납기는?','');
-    const id = response();
-    if (withAudio) upstream.receive('response.output_audio.delta',{response_id:id,delta:pcm});
-    upstream.receive('response.output_audio_transcript.delta',{response_id:id,delta:'부분 답변'});
-    upstream.receive('response.done',{response:{id,status}});
-    assert.equal(forwarded.some(([kind])=>kind==='done'),false);
-    assert.equal(forwarded.at(-1)[0],'fail');
-  }
+test('preview has no user data, ignores malformed audio, and does not succeed without speech', async t => {
+  const {voice,sockets,events} = setup(t,'cedar');
+  await Promise.resolve();
+  assert.equal(voice.speak('안녕하세요.'), true);
+  const [socket] = sockets;
+  socket.open();
+  assert.equal(socket.sent[0].session.audio.output.voice,'cedar');
+  assert.deepEqual(socket.sent[0].session.input.map(item => item.role),['developer']);
+  socket.receive('session.started');
+  socket.receive('session.output_audio.delta',{delta:'not valid pcm'});
+  socket.receive('session.output_transcript.delta',{event_id:'caption',delta:'안녕하세요.'});
+  t.mock.timers.tick(30_001);
+  assert.equal(events.some(([kind]) => kind === 'audio' || kind === 'done'),false);
+  assert.equal(events.at(-1)[0],'fail');
 });
 
-test('upgrade failures are scrubbed and provider sockets cannot be opened without a key', async t => {
-  const {upstream,forwarded} = setup(t);
-  let drained = false;
-  upstream.emit('unexpected-response',null,{statusCode:429,resume(){drained=true;}});
-  assert.equal(drained,true);
-  assert.match(forwarded.at(-1)[1], /한도/);
-  const result = await new Promise(resolve => {
-    const voice = openQuestionVoice({upstream(){assert.fail('must not open a socket');}}, {fail:resolve});
-    t.after(() => voice.close());
-  });
-  assert.match(result,/연결/);
+test('closing while answering drops late output', async t => {
+  const first = setup(t);
+  await Promise.resolve();
+  first.voice.answer('납기는?', '');
+  const [socket] = first.sockets;
+  socket.open();
+  socket.receive('session.started');
+  first.voice.close();
+  socket.receive('session.output_audio.delta',{event_id:'audio',delta:pcm});
+  assert.deepEqual(first.events,[['ready']]);
+});
+
+test('permission failures are scrubbed before being forwarded', async t => {
+  const {voice,sockets,events} = setup(t);
+  await Promise.resolve();
+  voice.answer('납기는?', '');
+  sockets[0].emit('unexpected-response',null,{statusCode:403,resume(){}});
+  assert.equal(events.at(-1)[0],'fail');
+  assert.match(events.at(-1)[1],/GPT-Live-1.1/);
+  assert.doesNotMatch(events.at(-1)[1],/private-key/);
 });

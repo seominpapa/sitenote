@@ -4,10 +4,10 @@ const recordTag = '<!-- sitenote-record ';
 const turnTag = '<!-- sitenote-turn ';
 const summaryTag = '<!-- sitenote-summary ';
 const tagEnd = ' -->';
-const sectionLabels = { personal: '개인 대화', meeting: '회의 원문', 'meeting-ai': '회의 중 AI 질의응답', followup: '회의 후 보완 대화' };
+export const sectionLabels = { personal: '개인 대화', meeting: '회의 원문', 'meeting-ai': '회의 중 AI 질의응답', followup: '회의 후 보완 대화' };
 
 const metadata = (tag: string, value: unknown) => tag + JSON.stringify(value).replace(/[<>&]/g, ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) + tagEnd;
-const heading = (value: string) => value.replace(/\s+/g, ' ').replace(/[\\`*_{}\[\]()#+.!<>|~-]/g, '\\$&');
+export const heading = (value: string) => value.replace(/\s+/g, ' ').replace(/[\\`*_{}\[\]()#+.!<>|~-]/g, '\\$&');
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
 function readMetadata(line: string, tag: string): unknown {

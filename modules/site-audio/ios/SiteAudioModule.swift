@@ -27,6 +27,7 @@ public final class SiteAudioModule: Module {
   private let engine = AVAudioEngine()
   private let player = AVAudioPlayerNode()
   private let gate = PlaybackGate()
+  private let preview = VoicePreview()
   private let playbackFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1)!
   private var archive: WaveArchive?
   private var running = false
@@ -51,11 +52,18 @@ public final class SiteAudioModule: Module {
     AsyncFunction("stopCapture") { self.stop() }.runOnQueue(.main)
     AsyncFunction("play") { (audio: String) in try self.enqueue(audio) }.runOnQueue(.main)
     AsyncFunction("stopPlayback") { self.stopOutput() }.runOnQueue(.main)
+    AsyncFunction("playPreview") { (wave: ExpoModulesCore.ArrayBuffer, promise: Promise) in
+      self.preview.play(wave, promise)
+    }.runOnQueue(.main)
+    AsyncFunction("stopPreview") { self.preview.stop() }.runOnQueue(.main)
     AsyncFunction("writeTextAtomic") { (uri: String, text: String) in
       try SiteAudioFiles.writeText(uri, text, documents: self.documents)
     }
     OnDestroy {
-      DispatchQueue.main.async { self.stop() }
+      DispatchQueue.main.async { self.preview.stop(); self.stop() }
+    }
+    OnAppEntersBackground {
+      DispatchQueue.main.async { self.preview.stop() }
     }
   }
 

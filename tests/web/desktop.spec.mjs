@@ -55,11 +55,10 @@ test('starts personal recording on Soniox, invites GPT once, then keeps recordin
       let sentReply = false;
       let sentResumed = false;
       let sentQuestion = false;
-      let itemText;
       let audioMs = 0;
       const emit = event => queueMicrotask(() => ws.emit('message', JSON.stringify(event)));
       const soniox = new URL(url).hostname === 'stt-rt.soniox.com';
-      const realtime = new URL(url).pathname === '/v1/realtime';
+      if (!soniox) expect(new URL(url).pathname).toBe('/v1/live/sessions');
       const connection = soniox ? ++sonioxConnections : ++liveConnections;
       const ws = Object.assign(new EventEmitter(), {
         readyState: 1, bufferedAmount: 0,
@@ -82,20 +81,16 @@ test('starts personal recording on Soniox, invites GPT once, then keeps recordin
             return;
           }
           const message = JSON.parse(data);
-          if (message.type === 'input_audio_buffer.append' || message.type === 'session.input_audio.append') audioInput.push(message.type);
-          if (!realtime) return;
-          if (message.type === 'session.update') emit({type: 'session.updated', session: {type:'realtime'}});
-          if (message.type === 'conversation.item.create' && message.item?.role === 'user') {
-            itemText = message.item.content?.find(part => part.type === 'input_text')?.text;
-            aiQuestions.push(itemText);
-          }
-          if (message.type === 'response.create' && itemText === question && !sentReply) {
+          if (message.type === 'session.input_audio.append') audioInput.push(message.audio);
+          if (message.type === 'session.close') return emit({type:'session.closed',reason:'close_requested'});
+          if (message.type !== 'session.start') return;
+          const itemText = message.session.input.filter(item => item.role === 'user').at(-1)?.content[0].text;
+          aiQuestions.push(itemText);
+          if (itemText === question && !sentReply) {
             sentReply = true;
-            const response = {id:'personal-response', metadata:message.response?.metadata};
-            emit({type: 'response.created', response});
-            emit({type: 'response.output_audio.delta', event_id:'personal-audio', response_id: response.id, delta: pcm});
-            emit({type: 'response.output_audio_transcript.delta', event_id:'personal-text', response_id: response.id, delta: aiReply});
-            emit({type: 'response.done', response: {...response, status:'completed'}});
+            emit({type:'session.started'});
+            emit({type:'session.output_audio.delta', event_id:'personal-audio', delta:pcm});
+            emit({type:'session.output_transcript.delta', event_id:'personal-text', delta:aiReply,start_ms:10,end_ms:100});
           }
         },
         close() {
@@ -106,10 +101,7 @@ test('starts personal recording on Soniox, invites GPT once, then keeps recordin
         },
         terminate() { this.close(); },
       });
-      queueMicrotask(() => {
-        ws.emit('open');
-        if (realtime) emit({type:'session.created', session:{type:'realtime'}});
-      });
+      queueMicrotask(() => ws.emit('open'));
       return ws;
     },
   });
@@ -149,13 +141,15 @@ test('starts personal recording on Soniox, invites GPT once, then keeps recordin
     expect(liveConnections).toBe(0);
     await page.getByRole('button', {name: 'AI에게 질문', exact: true}).click();
     await expect(page.getByTestId('ai-panel')).toContainText('질문 듣는 중');
+    expect(liveConnections).toBe(0);
     expect(aiQuestions).toEqual([]);
     questionSpoken = true;
     await expect(transcript.filter({hasText: aiReply})).toContainText('AI');
     await expect(transcript.filter({hasText: question})).toHaveCount(1);
     expect(liveConnections).toBe(1);
     expect(aiQuestions).toEqual([question]);
-    expect(audioInput).toEqual([]);
+    expect(audioInput.length).toBeGreaterThan(0);
+    expect(audioInput.every(raw => Buffer.from(raw,'base64').every(byte => byte === 0))).toBe(true);
     await page.getByRole('button', {name: 'AI 질문 닫기', exact: true}).click();
     await expect(page.getByTestId('ai-panel')).toContainText('대기 중');
     await expect(transcript.filter({hasText: resumedRecording})).toContainText('나');

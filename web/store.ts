@@ -1,6 +1,8 @@
 import type { FileName } from '../src/records/store.ts';
+import { buildNotesExport } from '../src/records/export.ts';
 import { parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown } from '../src/records/markdown.ts';
 import { assertId, isCategoryPath, safeId, type RecordData } from '../src/records/model.ts';
+import { summaryWithSpeakerNames } from '../src/records/summary-speakers.ts';
 
 type StoredRecord = { id: string } & Partial<Record<FileName, string>>;
 type StorageIssue = { id: string; file: FileName; cause: unknown };
@@ -249,14 +251,23 @@ export function undoCategories(expected: readonly CategoryUndoEntry[]) {
   }, expected);
 }
 
-export function exportRecords(selection: readonly RecordData[]) {
-  const markdown = selection.map(record => record.summary
-    ? `${transcriptMarkdown(record)}\n---\n\n${summaryMarkdown(record.summary, record.questions)}`
-    : transcriptMarkdown(record)).join('\n---\n\n');
-  const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+export function exportRecord(record: RecordData) {
+  const markdown = record.summary
+    ? `${transcriptMarkdown(record)}\n---\n\n${summaryMarkdown(summaryWithSpeakerNames(record) ?? record.summary, record.questions)}`
+    : transcriptMarkdown(record);
+  download(new Blob([markdown], {type:'text/markdown;charset=utf-8'}), `sitenote-${record.id}.md`);
+}
+
+export function exportRecords(records: readonly RecordData[]) {
+  const { filename, bytes } = buildNotesExport(records);
+  download(new Blob([bytes], {type:'application/zip'}), filename);
+}
+
+function download(data: Blob, filename: string) {
+  const url = URL.createObjectURL(data);
   const link = document.createElement('a');
   link.href = url;
-  link.download = selection.length === 1 ? `sitenote-${selection[0].id}.md` : 'sitenote-records.md';
+  link.download = filename;
   document.body.append(link);
   link.click();
   link.remove();

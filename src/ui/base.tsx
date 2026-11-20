@@ -50,11 +50,11 @@ export function Field({label, ...props}: TextInputProps & {label: string}) {
   </View>;
 }
 
-export function Header({title, sub, onBack}: {title: string; sub?: string; onBack: () => void}) {
+export function Header({title, sub, onBack}: {title?: string; sub?: string; onBack: () => void}) {
   return <View style={[styles.content, {paddingTop: 10, paddingBottom: 12, gap: 6}]}>
     <View style={styles.row}><Button label="‹ 돌아가기" onPress={onBack} /></View>
     {sub && <Text style={styles.label}>{sub}</Text>}
-    <Text accessibilityRole="header" style={styles.title}>{title}</Text>
+    {title && <Text accessibilityRole="header" style={styles.title}>{title}</Text>}
   </View>;
 }
 

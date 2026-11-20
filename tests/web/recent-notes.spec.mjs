@@ -1,9 +1,12 @@
 import { expect, test } from '@playwright/test';
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
-import { transcriptMarkdown } from '../../src/records/markdown.ts';
+import { summaryMarkdown, transcriptMarkdown } from '../../src/records/markdown.ts';
 import { createRecord } from '../../src/records/model.ts';
+
+test.use({timezoneId:'Asia/Seoul'});
 
 const title = day => `현장 기록 ${String(day).padStart(2, '0')}`;
 const id = day => `note-${String(day).padStart(2, '0')}`;
@@ -28,6 +31,70 @@ function library(page, records) {
     };
   }), records);
 }
+
+function exportedFiles(zip) {
+  const end = zip.length - 22;
+  expect(zip.readUInt32LE(end)).toBe(0x06054b50);
+  const count = zip.readUInt16LE(end + 10);
+  const files = new Map();
+  let cursor = zip.readUInt32LE(end + 16);
+  for (let index = 0; index < count; index++) {
+    expect(zip.readUInt32LE(cursor)).toBe(0x02014b50);
+    expect(zip.readUInt16LE(cursor + 10)).toBe(0);
+    const length = zip.readUInt16LE(cursor + 28);
+    const name = zip.toString('utf8', cursor + 46, cursor + 46 + length);
+    const local = zip.readUInt32LE(cursor + 42);
+    expect(zip.readUInt32LE(local)).toBe(0x04034b50);
+    const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    files.set(name,zip.toString('utf8',start,start + zip.readUInt32LE(cursor + 24)));
+    cursor += 46 + length + zip.readUInt16LE(cursor + 30) + zip.readUInt16LE(cursor + 32);
+  }
+  return files;
+}
+
+test('bulk export downloads every page as original and summary Markdown files without internal metadata', async ({page}) => {
+  const server = createApp({
+    webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
+    accessToken:'isolated-export-fixture-token-at-least-32',
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const first = createRecord({id:id(1),kind:'meeting',title:title(1),now:'2026-09-30T17:00:00.000Z'});
+    const data = {...first,speakers:{'meeting:c:1':'김 담당'},turns:[
+      {id:'internal-turn-1', section:'meeting', role:'speaker', speakerId:'meeting:c:1', text:'다음 주에 공급을 시작합니다.', timeMs:2_000},
+    ]};
+    const entry = {id:first.id, 'transcript.md':transcriptMarkdown(data),
+      'summary.md':summaryMarkdown('## 공급 일정\n다음 주 공급을 시작하기로 했습니다.', ['앱 내부 보충 질문'])};
+    await page.goto('http://127.0.0.1:' + server.address().port);
+    await library(page,[...entries.slice(0,-1), entry]);
+    await page.reload();
+    await expect(page.getByText(title(23),{exact:true})).toBeVisible();
+    await expect(page.getByText(title(1),{exact:true})).not.toBeVisible();
+
+    const downloadPending = page.waitForEvent('download');
+    await page.getByRole('button',{name:/전체 내보내기/}).click();
+    const download = await downloadPending;
+    const stem = 'sitenote_(2026-10-01~2026-10-23)';
+    expect(download.suggestedFilename()).toBe(stem + '.zip');
+    const files = exportedFiles(await readFile(await download.path()));
+    expect([...files.keys()].sort()).toEqual([stem + '_요약.md', stem + '_원문.md']);
+    const original = files.get(stem + '_원문.md');
+    const summary = files.get(stem + '_요약.md');
+    expect(original).toContain(title(23));
+    expect(original).toContain(title(1));
+    expect(original).toContain('김 담당');
+    expect(original).toContain('다음 주에 공급을 시작합니다.');
+    expect(summary).toContain(title(1));
+    expect(summary).toContain('다음 주 공급을 시작하기로 했습니다.');
+    expect(original).not.toContain('다음 주 공급을 시작하기로 했습니다.');
+    expect(summary).not.toContain('다음 주에 공급을 시작합니다.');
+    for (const markdown of [original, summary]) expect(markdown).not.toMatch(/<!-- sitenote-|internal-turn-1|meeting:c:1|앱 내부 보충 질문|기록 ID:/);
+  } finally {
+    await page.close();
+    await new Promise(done => server.close(done));
+  }
+});
 
 test('recent notes paginate, retain selections, and delete only a confirmed batch', async ({page}) => {
   const server = createApp({

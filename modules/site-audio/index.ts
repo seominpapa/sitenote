@@ -16,6 +16,8 @@ declare class NativeSiteAudio extends NativeModule<EventListeners<Events>> {
   stopCapture(): Promise<void>;
   play(audio: string): Promise<void>;
   stopPlayback(): Promise<void>;
+  playPreview(wave: ArrayBuffer): Promise<void>;
+  stopPreview(): Promise<void>;
   writeTextAtomic(uri: string, text: string): Promise<void>;
 }
 declare class NativeVoiceEvents extends NativeModule<EventListeners<{
@@ -70,5 +72,7 @@ export default {
   stopCapture: () => native.stopCapture(),
   play: (audio: string) => native.play(audio),
   stopPlayback: () => native.stopPlayback(),
+  playPreview: (wave: ArrayBuffer) => native.playPreview(wave),
+  stopPreview: () => native.stopPreview(),
   writeTextAtomic: (uri: string, text: string) => native.writeTextAtomic(uri, text),
 };

@@ -1,6 +1,8 @@
 import { compactParts, draftContext } from '../src/workflow.ts';
 import { isCategoryPath, type RecordData } from '../src/records/core.ts';
 import { TYPED_QUESTION_LIMIT, typedJudgeRequest, typedQuestionRequest, type TypedVerdict } from '../src/typedFollowup.ts';
+import { readVoicePreview } from '../src/voice-preview.ts';
+import type { AiVoice } from '../server/voices.mjs';
 
 export type Health = { ok: true; providers: { live: boolean; soniox: boolean; text: boolean } };
 export type ProviderKeys = { openaiKey?: string; sonioxKey?: string };
@@ -21,6 +23,13 @@ async function request<T>(path: string, body?: object): Promise<T> {
 
 export const health = () => request<Health>('/health');
 export const saveKeys = (keys: ProviderKeys) => request<Health>('/settings/keys', keys);
+export async function fetchVoicePreview(voice: AiVoice, signal: AbortSignal) {
+  const response = await fetch('/v1/voice-preview', {
+    method:'POST', credentials:'same-origin', redirect:'error', signal,
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({voice}),
+  });
+  return readVoicePreview(response);
+}
 export const answer = (question: string, context: string) =>
   request<{ answer: string }>('/answer', { question, context });
 
