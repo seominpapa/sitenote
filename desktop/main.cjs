@@ -1,9 +1,11 @@
-const { app, BrowserWindow, dialog, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences } = require('electron');
 const { randomBytes } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const { isAbsolute, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { origin, port, ownedPage, configureSession, secureContents, bindLocalServer, providerKeysFile } = require('./runtime.cjs');
+const { createUpdater } = require('./updater.cjs');
+const { registerUpdateIpc } = require('./update-ipc.cjs');
 
 const runtimeRoot = app.isPackaged ? join(process.resourcesPath, 'runtime') : join(__dirname, '..');
 let server;
@@ -42,7 +44,7 @@ async function createWindow() {
     width: 1200, height: 820, minWidth: 420, minHeight: 620, title: 'Sitenote', show: false,
     backgroundColor: '#f6f6f2',
     webPreferences: {
-      session: partition, nodeIntegration: false, contextIsolation: true, sandbox: true,
+      session: partition, preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true,
       webSecurity: true, webviewTag: false, allowRunningInsecureContent: false, devTools: !app.isPackaged,
     },
   });
@@ -73,6 +75,16 @@ async function start() {
   await bindLocalServer(server);
   server.on('error', stopWithError);
   partition = session.fromPartition('persist:sitenote-desktop');
+  const version = app.getVersion();
+  registerUpdateIpc(ipcMain, () => window?.webContents, version,
+    createUpdater({currentVersion:version, userData:app.getPath('userData'), platform:process.platform, arch:process.arch}),
+    async path => {
+      if (process.platform === 'darwin') {
+        if (await shell.openPath(path)) throw new Error('업데이트 디스크 이미지를 열지 못했습니다.');
+      } else {
+        shell.showItemInFolder(path);
+      }
+    });
   await configureSession(partition, desktopToken, () => window?.webContents, requestMicrophone, microphoneGranted);
   await createWindow();
 }

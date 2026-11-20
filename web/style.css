@@ -240,6 +240,12 @@ label > input:not([type=checkbox]), label > select { width: 100% }
 .invitation .actions { margin-block-start: .75rem }
 .invitation .consent-status { padding: .46rem .58rem; border-radius: var(--radius); background: var(--canvas); color: var(--link); font-size: .875rem }
 .invitation .consent-status[data-state=listening] { color: var(--recording); background: var(--recording-tint); font-weight: 600 }
+.typed-followup, .typed-followup form, .typed-followup label { display: grid; gap: .65rem; min-width: 0 }
+.typed-followup form { max-width: 44rem; justify-items: start }
+.typed-followup label { width: 100%; gap: .35rem; font-size: .9rem }
+.typed-followup textarea { width: 100%; max-width: 100%; min-width: 0; padding: .62rem .7rem; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--canvas); color: var(--ink); font: inherit; resize: vertical }
+.typed-followup textarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px }
+.typed-followup .typed-question { width: 100%; padding: .6rem .75rem; border-inline-start: 3px solid var(--primary); background: var(--canvas); overflow-wrap: anywhere }
 .citation, .back { border: 0; border-radius: var(--radius); font-weight: 600 }
 .citation { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; padding: .12rem .4rem; background: var(--blue-tint); color: var(--link); font-size: .8125rem }
 .back { justify-self: start; min-height: 2.5rem; padding: .26rem .42rem; color: var(--link); background: transparent; font-size: .875rem }

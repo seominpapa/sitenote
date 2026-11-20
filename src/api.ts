@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { fetch } from 'expo/fetch';
+import { TYPED_QUESTION_LIMIT, typedJudgeRequest, typedQuestionRequest, type TypedVerdict } from './typedFollowup';
 import { compactParts, draftContext, type Connection } from './workflow';
 
 const settingsKey = 'sitenote.connection.v1';
@@ -41,6 +42,20 @@ async function request<T>(connection: Connection, path: string, body?: object): 
 export const health = (c: Connection) => request<Health>(c, '/health');
 export const answer = (c: Connection, question: string, context: string, history?: string) =>
   request<{answer: string}>(c, '/answer', {question, context, history});
+
+export async function generateFollowup(c: Connection, input: NonNullable<ReturnType<typeof typedQuestionRequest>>) {
+  const result = await request<{question?: unknown}>(c, '/followup', input);
+  if (result.question === null) return null;
+  const question = typeof result.question === 'string' ? result.question.trim() : '';
+  if (!question || question.length > TYPED_QUESTION_LIMIT) throw new Error('서버가 보완 질문을 반환하지 않았습니다.');
+  return question;
+}
+
+export async function judgeFollowup(c: Connection, input: ReturnType<typeof typedJudgeRequest>): Promise<TypedVerdict> {
+  const {verdict} = await request<{verdict?: unknown}>(c, '/followup', input);
+  if (verdict === 'advance' || verdict === 'clarify' || verdict === 'wait' || verdict === 'complete') return verdict;
+  throw new Error('서버가 보완 답변 확인 결과를 반환하지 않았습니다.');
+}
 
 export async function summarize(c: Connection, kind: 'personal'|'meeting', transcript: string, related: string): Promise<Summary> {
   const limit = 30_000;

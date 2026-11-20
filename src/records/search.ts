@@ -106,7 +106,7 @@ const compare = (a: Ranked, b: Ranked) => b.score - a.score || b.evidence.create
 
 export function isOriginalTurn(turn: Turn): boolean {
   return (turn.role === 'user' || turn.role === 'speaker') && safeId.test(turn.id) && turn.id !== 'summary' &&
-    !turn.interrupted && Boolean(turn.text.trim());
+    turn.entry !== 'typed-question' && !turn.interrupted && Boolean(turn.text.trim());
 }
 
 const extraQuestionWords = /^(?:지난번|그거|그건|거기|그게|혹시|다시|정확히|짧게|때(?:는)?|무슨|뭐(?:가|를|라고|였지|였죠|였나요|였는지|였더라|였어|야|지)?|뭘|(?:얘기|내용)(?:였지|였나요|였어)|(?:회의|기록|원문|대화|메모)(?:에서(?:는)?|에는|을|를)|(?:알려|말해|정리해|설명해|찾아|얘기해|보여)(?:줘|줘요|주세요|줄래)?|(?:봐|줘|보기|주세요|건가요|이었나요|있나요|인가요|였지|했지|했나요|했는지|했어)|it|there|those|could|would|can|show|tell|find|record|meeting|previous|last|past|we|say|happened|discuss)$/;

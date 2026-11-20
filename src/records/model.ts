@@ -5,6 +5,7 @@ export type Turn = {
   text: string;
   timeMs: number;
   speakerId?: string;
+  entry?: 'typed-question' | 'typed-answer';
   interrupted?: boolean;
   sourceRefs?: string[];
   quotedRefs?: string[];
@@ -84,6 +85,7 @@ export function assertTurn(turn: Turn): void {
     (turn.interrupted !== undefined && typeof turn.interrupted !== 'boolean')) {
     throw Error('발언 데이터가 올바르지 않습니다.');
   }
+  assertEntry(turn, turn.entry);
   const refs = turn.sourceRefs;
   if (refs !== undefined && (turn.role !== 'ai' || !Array.isArray(refs) || refs.length > 2 ||
     !Array.from(refs).every(isOriginalSourceRef) || new Set(refs).size !== refs.length)) {
@@ -96,10 +98,19 @@ export function assertTurn(turn: Turn): void {
   }
 }
 
+function assertEntry(turn: Turn, entry: Turn['entry']): void {
+  if (entry !== undefined && (turn.section !== 'followup' ||
+    !(entry === 'typed-question' ? (turn.role === 'ai' || turn.role === 'user') : entry === 'typed-answer' && turn.role === 'user'))) {
+    throw Error('직접 입력한 발언을 구분할 수 없습니다.');
+  }
+}
+
 export function applyTurn(record: RecordData, turn: Turn, now = new Date().toISOString()): RecordData {
   assertTurn(turn);
   const previous = record.turns.find(item => item.id === turn.id);
   const { id, section, role, speakerId } = turn;
+  const entry = turn.entry ?? previous?.entry;
+  assertEntry(turn, entry);
   const text = turn.text.replace(/\r\n?/g, '\n');
   const timeMs = previous?.timeMs ?? Math.round(turn.timeMs);
   const interrupted = previous?.interrupted || turn.interrupted;
@@ -109,10 +120,10 @@ export function applyTurn(record: RecordData, turn: Turn, now = new Date().toISO
   const quotes = sourceRefs?.filter(ref => verified.has(ref));
   const quotedRefs = quotes?.length ? quotes : undefined;
   if (previous && previous.text === text && previous.section === section && previous.role === role &&
-    previous.speakerId === speakerId && previous.interrupted === interrupted &&
+    previous.speakerId === speakerId && previous.interrupted === interrupted && previous.entry === entry &&
     previous.sourceRefs?.join() === sourceRefs?.join() && previous.quotedRefs?.join() === quotedRefs?.join()) return record;
   const next: Turn = { id, section, role, text, timeMs,
-    ...(speakerId !== undefined ? { speakerId } : {}), ...(interrupted !== undefined ? { interrupted } : {}),
+    ...(speakerId !== undefined ? { speakerId } : {}), ...(interrupted !== undefined ? { interrupted } : {}), ...(entry ? {entry} : {}),
     ...(sourceRefs ? {sourceRefs:[...sourceRefs]} : {}), ...(quotedRefs ? {quotedRefs} : {}) };
   const turns = previous ? record.turns.map(item => item.id === id ? next : item) : [...record.turns, next];
   if (!previous && (record.turns.at(-1)?.timeMs ?? 0) > timeMs) turns.sort((a, b) => a.timeMs - b.timeMs);
@@ -129,6 +140,8 @@ export function renameSpeaker(record: RecordData, speakerId: string, name: strin
 }
 
 export function speakerLabel(record: RecordData, turn: Turn): string {
+  if (turn.entry === 'typed-question') return turn.role === 'ai' ? 'AI 질문' : '직접 입력한 질문';
+  if (turn.entry === 'typed-answer') return '직접 입력한 답변';
   if (turn.role === 'ai') return 'AI';
   if (turn.role === 'user') return turn.section === 'personal' ? '나' : '응답자 미확인';
   const id = turn.speakerId;
@@ -139,6 +152,35 @@ export function speakerLabel(record: RecordData, turn: Turn): string {
 
 export const speakerDisplayId = (id: string) => /^(?:meeting|followup):[^:]+:/.test(id)
   ? id.slice(id.indexOf(':', id.indexOf(':') + 1) + 1) : id;
+
+type SpeakerGroup = {id: string; area: 'meeting'|'followup'; label: string; firstTurn: Turn; count: number; name: string};
+
+export function speakerGroups(record: RecordData): SpeakerGroup[] {
+  const groups = new Map<string, SpeakerGroup>();
+  for (const turn of record.turns) {
+    const id = turn.speakerId;
+    if (!id || turn.role !== 'speaker') continue;
+    const group = groups.get(id);
+    if (group) {
+      groups.set(id, {...group, count:group.count + 1, firstTurn:turn.timeMs < group.firstTurn.timeMs ? turn : group.firstTurn});
+    } else {
+      groups.set(id, {id, area:turn.section === 'followup' ? 'followup' : 'meeting', label:`화자 ${speakerDisplayId(id)}`,
+        firstTurn:turn, count:1, name:Object.hasOwn(record.speakers,id) ? record.speakers[id] : ''});
+    }
+  }
+  const byTime = [...groups.values()].sort((a,b) => a.firstTurn.timeMs - b.firstTurn.timeMs);
+  const descriptions = byTime.map(group => `${group.area}:${group.label}`);
+  const count = new Map<string,number>();
+  for (const label of descriptions) count.set(label,(count.get(label) ?? 0) + 1);
+  const seen = new Map<string,number>();
+  return byTime.map((group,index) => {
+    const key = descriptions[index];
+    if (count.get(key) === 1) return group;
+    const position = (seen.get(key) ?? 0) + 1;
+    seen.set(key,position);
+    return {...group,label:`${group.label} · 구분 ${position}`};
+  });
+}
 
 export function timeLabel(ms: number): string {
   const seconds = Math.floor(ms / 1000);

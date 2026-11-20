@@ -7,9 +7,16 @@ import { textResult, validTextRequest } from './text.mjs';
 import { createLocalWeb } from './web.mjs';
 import { createKeyStore, parseKeys } from './keys.mjs';
 import { categoryResult, validCategories } from './categories.mjs';
+import { typedFollowupResult, validTypedFollowup } from './typed-followup.mjs';
 
 const digest = (secret) => createHash('sha256').update(secret).digest();
 const maxBytes = 200_000;
+const textRoutes = new Map([
+  ['/summary', { size:maxBytes, valid:data => validTextRequest('/summary', data), result:(data, options) => textResult('/summary', data, options) }],
+  ['/answer', { size:maxBytes, valid:data => validTextRequest('/answer', data), result:(data, options) => textResult('/answer', data, options) }],
+  ['/categories', { size:110_000, rate:10, valid:validCategories, result:categoryResult }],
+  ['/followup', { size:58_000, rate:12, valid:validTypedFollowup, result:typedFollowupResult }],
+]);
 
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -98,17 +105,17 @@ export function createApp(config) {
     if (!allow('http', 80)) return json(res, 429, { error: '요청이 너무 많습니다. 잠시 뒤 다시 시도하세요.' });
     const path = req.url;
     if (req.method === 'GET' && path === '/health') return json(res, 200, health());
-    if (req.method !== 'POST' || !['/summary', '/answer', '/categories'].includes(path)) return json(res, 404, { error: '요청을 찾을 수 없습니다.' });
-    const categories = path === '/categories';
-    const size = categories ? 110_000 : maxBytes;
+    const route = textRoutes.get(path);
+    if (req.method !== 'POST' || !route) return json(res, 404, { error: '요청을 찾을 수 없습니다.' });
+    const {size, rate, valid, result} = route;
     if (!jsonType(req, size)) return json(res, 400, { error: 'JSON 요청 형식 또는 크기를 확인하세요.' });
     if (!options.openaiKey) return json(res, 503, { error: '서버에 OpenAI API 키가 없습니다.' });
     const data = await readJson(req, size).catch(() => null);
-    if (!(categories ? validCategories(data) : validTextRequest(path, data))) return json(res, 400, { error: '요청 항목 또는 길이를 확인하세요.' });
-    if (textPending >= 2 || !allow('text', 24) || (categories && !allow('categories', 10))) return json(res, 429, { error: '조금 뒤에 다시 분석해 주세요.' });
+    if (!valid(data)) return json(res, 400, { error: '요청 항목 또는 길이를 확인하세요.' });
+    if (textPending >= 2 || (rate && !allow(path, rate)) || !allow('text', 24)) return json(res, 429, { error: '조금 뒤에 다시 분석해 주세요.' });
     textPending++;
     try {
-      return json(res, 200, categories ? await categoryResult(data, options) : await textResult(path, data, options));
+      return json(res, 200, await result(data, options));
     } catch {
       return json(res, 502, { error: '텍스트 처리에 실패했습니다. 모델 권한과 서버 연결을 확인하세요.' });
     } finally {

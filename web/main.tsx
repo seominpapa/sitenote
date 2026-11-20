@@ -3,8 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { applyTurn, createRecord, isCategoryPath, parseCategoryPath, renameSpeaker, safeId, searchContext, type RecordData } from '../src/records/core.ts';
 import { analysisContext, liveContext, resolveOriginalSources, searchOriginalAnswers, searchPastOriginals } from '../src/recordContext.ts';
 import { createVoiceSession, type Mode, type Snapshot } from '../src/session/session.ts';
+import { appendTypedFollowup, type TypedPair } from '../src/typedFollowup.ts';
 import { answer, classifyRecords, health, saveKeys, summarize, type Health, type ProviderKeys } from './api.ts';
 import { createWebAudio } from './audio.ts';
+import { DesktopUpdate } from './desktop-update.tsx';
 import { Icon, type Jump } from './ui.tsx';
 import { categoryBatchLimit, Detail, RecordList, Search, Settings, StartCards, type LibraryView, Voice } from './views.tsx';
 import { applyCategories, deleteRecords, exportRecords, loadCategoryUndo, loadFolders, records, sameCategory, saveFolders, undoCategories, watchLibrary, type CategoryUndoEntry } from './store.ts';
@@ -13,7 +15,7 @@ import './style.css';
 
 type Session = ReturnType<typeof createVoiceSession>;
 type Active = { session: Session; audio: ReturnType<typeof createWebAudio>; id: string; mode: Mode };
-type Page = { name: 'home' | 'search' | 'settings' } | { name: 'detail'; id: string; part?: string; offerFollowup?: boolean; consentAudio?: ConsentAudio };
+type Page = { name: 'home' | 'search' | 'settings' } | { name: 'detail'; id: string; part?: string; offerFollowup?: boolean; consentAudio?: ConsentAudio; typedFollowup?: boolean };
 type RecordInfo = { title: string; project?: string };
 const idle: Snapshot = { phase: 'idle', paused: false, capturing: false, playback: false, liveReady: false, sonioxReady: false, partials: [], references: [], saving: false };
 const inactive = () => idle;
@@ -284,6 +286,18 @@ function App() {
     else start('followup', undefined, id, audio);
   }
 
+  async function saveTypedFollowup(id: string, pair: TypedPair) {
+    if (active || pending.current) throw Error('다른 작업을 마친 뒤 다시 저장해 주세요.');
+    pending.current = true;
+    setBusy(true);
+    try {
+      await editRecord(id, latest => appendTypedFollowup(latest, pair));
+    } finally {
+      pending.current = false;
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (busy || !queuedFollowup) return;
     setQueuedFollowup(undefined);
@@ -480,6 +494,7 @@ function App() {
     <div className="app-main">
       <main className="shell content">
         {notice && !showLibraryNotice && <p className="notice" role="status">{notice}</p>}
+        <DesktopUpdate settings={page.name === 'settings'} visible={!active && (page.name === 'home' || page.name === 'settings')} busy={busy} />
         {active && record ? <Voice session={active.session} mode={active.mode} record={record} status={snapshot}
           evidence={snapshot.phase === 'processing' ? [] : evidence} finish={finish} busy={busy} aiAvailable={!!connected?.providers.live} readMeter={active.audio.readMeter}
           withAudio={action => void run(async () => { await active.audio.unlock(); await action(); })} />
@@ -489,6 +504,13 @@ function App() {
             related={evidence}
             open={open} back={() => navigate({ name: 'home' })} summarize={() => void run(() => saveSummary(record))}
             followup={() => acceptFollowup(record.id, consentAudio)} offerFollowup={!!page.offerFollowup} consentAudio={consentAudio}
+            typedFollowup={!!page.typedFollowup} typedAIAvailable={!!connected?.providers.text}
+            openTypedFollowup={() => {
+              setQueuedFollowup(undefined);
+              setNotice('');
+              setPage({name:'detail', id:record.id, part:page.part, typedFollowup:true});
+            }} closeTypedFollowup={() => setPage({name:'detail', id:record.id, part:page.part})}
+            loadTypedFollowup={() => records.load(record.id)} saveTypedFollowup={pair => saveTypedFollowup(record.id, pair)}
             followupIssue={followupIssue} keySettings={() => {
               if (!active) {
                 setQueuedFollowup(undefined);
@@ -526,7 +548,7 @@ function App() {
               undoAvailable={undoAvailable} undo={undoClassification} />
           </>}
       </main>
-      <footer className="app-footer"><div className="shell footer"><span>Sitenote Desktop</span><span>원문과 요약은 이 브라우저에 저장됩니다.</span></div></footer>
+      <footer className="app-footer"><div className="shell footer"><span>Sitenote Desktop</span><span>원문과 요약은 로컬 PC에 저장됩니다.</span></div></footer>
     </div>
   </div>;
 }

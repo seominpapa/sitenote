@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import { Pressable, ScrollView, Switch, Text, View } from 'react-native';
-import type { Evidence, RecordData, Turn } from '../records/core';
+import { speakerGroups, speakerLabel as recordSpeakerLabel, type Evidence, type RecordData, type Turn } from '../records/core';
 import { currentQuotedRefs } from '../recordContext';
 import { citationParts } from '../workflow';
 import { Button, color, Field, Header, Notice, styles } from './base';
+import { Supplement, type SupplementActions } from './Supplement';
 
 export type Jump = (id: string, turnId?: string) => void;
 
@@ -35,7 +36,7 @@ export function Home({records, connected, start, open, goSearch, goSettings, sta
       </View>
       <Text accessibilityRole="header" style={[styles.title, {color: color.white}]}>오늘의 대화가{ '\n' }다음 대화의 기억으로.</Text>
       <Text style={[styles.body, {color: '#D9E8DD'}]}>혼자 떠올린 생각과 함께 나눈 결정을 목소리로 남겨 보세요.</Text>
-      <View style={styles.row}>
+      <View style={[styles.row, {width:'100%'}]}>
         <Button label="개인 대화 시작" variant="accent" onPress={() => start('personal')}/>
         <Button label={choosing ? '회의 설정 닫기' : '회의 시작'} onPress={() => setChoosing(!choosing)}/>
       </View>
@@ -66,10 +67,7 @@ export function Home({records, connected, start, open, goSearch, goSettings, sta
 }
 
 export function speakerLabel(turn: Turn, record: RecordData) {
-  if (turn.role === 'ai') return 'AI';
-  if (turn.role === 'user') return turn.section === 'followup' ? '답변자' : '나';
-  return (turn.speakerId && record.speakers[turn.speakerId]) ||
-    (turn.speakerId ? '발언자 미확인 · 화자 ' + turn.speakerId.split(':').at(-1) : '발언자 미확인');
+  return recordSpeakerLabel(record,turn);
 }
 
 export function RichText({value, refs, jump}: {value: string; refs: Map<string, () => void>; jump?: (reference: string) => void}) {
@@ -133,13 +131,37 @@ export function TurnCard({turn, record, highlight = false, partial = false, onRe
   </View>;
 }
 
+function SpeakerNames({record, working, rename}: {record: RecordData; working: boolean; rename(id: string): void}) {
+  const [expanded, setExpanded] = useState(false);
+  const groups = speakerGroups(record);
+  if (!groups.length) return null;
+  return <View style={styles.card}>
+    <Button label={expanded ? '화자 이름 관리 닫기' : `화자 이름 관리 · ${groups.length}개 그룹`}
+      onPress={() => setExpanded(!expanded)} disabled={working}/>
+    {expanded && <>
+      <Text style={styles.small}>한 그룹의 모든 발언에 이름을 적용합니다. 녹음 연결이 달라지면 같은 번호라도 동일인인지 확인할 수 없습니다.</Text>
+      {(['meeting','followup'] as const).map(area => {
+        const speakers = groups.filter(group => group.area === area);
+        return speakers.length ? <View key={area} style={{gap:8}}>
+          <Text accessibilityRole="header" style={styles.heading}>{area === 'followup' ? '회의 후 보충 대화' : '회의 원문'}</Text>
+          {speakers.map(({id,label,name,firstTurn,count}) => <View key={id} style={{gap:3}}>
+            <Button label={`${label} · ${name || '발언자 미확인'} 이름 수정`} onPress={() => rename(id)} disabled={working}/>
+            <Text style={styles.small}>첫 발언 {clock(firstTurn.timeMs)} · {count}개 발언</Text>
+            <Text style={styles.small} numberOfLines={2}>{firstTurn.text}</Text>
+          </View>)}
+        </View> : null;
+      })}
+    </>}
+  </View>;
+}
+
 const sections = {personal: '개인 대화', meeting: '회의 원문', 'meeting-ai': '회의 중 AI 질의응답', followup: '회의 후 보완 대화'};
 
-export function Details({record, focus, back, update, remove, exportOne, audioFiles, exportAudio, rename, summary, followup, refs, sources, jump, working, status}: {
+export function Details({record, focus, back, update, remove, exportOne, audioFiles, exportAudio, rename, summary, followup, supplement, refs, sources, jump, working, status}: {
   record: RecordData; focus?: string; back: () => void;
   update: (fields: Pick<RecordData, 'title'|'project'|'allowInMeetings'>) => Promise<void>;
   remove: () => void; exportOne: () => void; rename: (id: string) => void; summary: () => void;
-  followup: () => void; refs: Map<string, () => void>; working: boolean; status?: string;
+  followup: () => void; supplement: SupplementActions; refs: Map<string, () => void>; working: boolean; status?: string;
   sources: Evidence[]; jump: Jump;
   audioFiles: () => {name: string; uri: string}[]; exportAudio: (uri: string) => void;
 }) {
@@ -160,14 +182,19 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
   const visible = tab === 'followup' ? record.turns.filter(turn => turn.section === 'followup') : record.turns;
   return <>
     <Header title={record.title} sub={record.kind === 'meeting' ? '회의 기록' : '개인 기록'} onBack={back}/>
-    <ScrollView ref={scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <ScrollView ref={scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets>
       <Text style={styles.small}>{dateLabel(record.createdAt)}{record.project ? ' · ' + record.project : ''}</Text>
       <View style={styles.row}>
-        <Button label="요약" variant={tab === 'summary' ? 'primary' : 'outline'} onPress={() => setTab('summary')}/>
-        <Button label="원문" variant={tab === 'transcript' ? 'primary' : 'outline'} onPress={() => setTab('transcript')}/>
-        {record.kind === 'meeting' && <Button label="보완 대화" variant={tab === 'followup' ? 'primary' : 'outline'} onPress={() => setTab('followup')}/>}
+        <Button label="요약" variant={tab === 'summary' ? 'primary' : 'outline'} onPress={() => setTab('summary')} disabled={working}/>
+        <Button label="원문" variant={tab === 'transcript' ? 'primary' : 'outline'} onPress={() => setTab('transcript')} disabled={working}/>
+        {record.kind === 'meeting' && <Button label="보완 대화" variant={tab === 'followup' ? 'primary' : 'outline'} onPress={() => setTab('followup')} disabled={working}/>}
       </View>
+      {record.kind === 'meeting' && <View style={tab === 'followup' ? undefined : {display:'none'}}>
+        <Supplement record={record} actions={supplement} working={working}/>
+      </View>}
       {status && <Notice text={status}/>}
+      <SpeakerNames record={record} working={working} rename={rename}/>
       {tab === 'summary' ? <View style={styles.card}>
         {record.summary ? <RichText value={record.summary} refs={refs}/> : <Text style={styles.body}>저장된 요약이 없습니다.</Text>}
         {!!record.questions?.length && <><Text style={styles.heading}>확인할 사항</Text>{record.questions.map((question, index) =>
@@ -177,6 +204,7 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
             onPress={summary} disabled={working || !record.turns.length}/>
           {record.kind === 'meeting' && <Button label="음성으로 보완하기" variant="primary" onPress={followup}
             disabled={working || !record.summary}/>}
+          {record.kind === 'meeting' && <Button label="글로 보완하기" onPress={() => setTab('followup')} disabled={working}/>}
         </View>
       </View> : visible.length ? visible.map((turn, index) =>
         <View key={turn.id} onLayout={event => {
@@ -185,7 +213,7 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
           if (focus === turn.id) scroll.current?.scrollTo({y, animated: false});
         }} style={{gap: 6}}>
           {turn.section !== visible[index - 1]?.section && <Text accessibilityRole="header" style={styles.heading}>{sections[turn.section]}</Text>}
-          <TurnCard turn={turn} record={record} highlight={focus === turn.id} onRename={rename} sources={sources} jump={jump}/>
+          <TurnCard turn={turn} record={record} highlight={focus === turn.id} sources={sources} jump={jump}/>
         </View>) : <Notice text="이 구간에는 저장된 발언이 없습니다."/>}
       {editing && <View style={styles.card}>
         <Field label="기록 제목" value={title} onChangeText={setTitle} maxLength={120}/>

@@ -23,6 +23,14 @@ const end = (value, length) => value.slice(0, length).replace(/[\ud800-\udbff]$/
 const answerLimit = 2_000;
 
 export async function judgeFollowup(data, options, signal) {
+  try {
+    return await followupVerdict(data, options, signal);
+  } catch {
+    return 'wait';
+  }
+}
+
+export async function followupVerdict(data, options, signal) {
   if (signal?.aborted) return 'wait';
   const question = end(compact(data?.question), 500);
   const answer = compact(data?.answer);
@@ -38,17 +46,10 @@ export async function judgeFollowup(data, options, signal) {
   };
   const timeout = AbortSignal.timeout(12_000);
   const active = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  try {
-    const transport = (url, init) => options.transport(url, { ...init, signal: active });
-    const response = await providerText({ openaiKey: options.openaiKey, textModel: options.textModel, transport }, {
-      instructions, input, maxTokens: 512, schema,
-    });
-    if (active.aborted) return 'wait';
-    const result = JSON.parse(response);
-    if (!result || Object.keys(result).length !== 1 || !verdicts.includes(result.verdict)) return 'wait';
-    if (result.verdict === 'complete' && data.hasNext !== false) return 'advance';
-    return result.verdict;
-  } catch {
-    return 'wait';
-  }
+  const response = await providerText(options, { instructions, input, maxTokens: 512, schema, signal:active });
+  active.throwIfAborted();
+  const result = JSON.parse(response);
+  if (!result || Object.keys(result).length !== 1 || !verdicts.includes(result.verdict)) throw new Error('invalid follow-up verdict');
+  if (result.verdict === 'complete' && data.hasNext !== false) return 'advance';
+  return result.verdict;
 }

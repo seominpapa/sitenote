@@ -5,6 +5,9 @@ directories:
 files:
   - main.cjs
   - runtime.cjs
+  - preload.cjs
+  - update-ipc.cjs
+  - updater.cjs
   - package.json
 extraResources:
   - from: ../dist/runtime

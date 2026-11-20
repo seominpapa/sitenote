@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { lstat, mkdtemp, mkdir, readlink, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,6 +8,7 @@ import { _electron as electron, expect } from '@playwright/test';
 
 const command = promisify(execFile);
 const arch = process.argv[2];
+const {version} = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
 if (process.platform !== 'darwin' || (arch !== 'arm64' && arch !== 'x64')) {
   throw new Error('On macOS, run node desktop/smoke-macos.mjs arm64|x64.');
 }
@@ -43,6 +44,10 @@ async function validateRunningApp() {
   const window = await app.firstWindow();
   await expect(window.getByRole('button', { name: 'Sitenote 홈' })).toBeVisible();
   await expect(window.getByText('로컬 서버 연결됨')).toBeVisible();
+  await expect(window.getByText('원문과 요약은 로컬 PC에 저장됩니다.', {exact:true})).toBeVisible();
+  await window.getByRole('button', {name:'설정', exact:true}).click();
+  await expect(window.getByRole('heading', {name:'앱 업데이트'})).toBeVisible();
+  await expect(window.getByText('현재 버전 ' + version, {exact:true})).toBeVisible();
   assert.equal(await app.evaluate(({app}) => app.getPath('userData')), profile);
   assert.equal(await app.evaluate(() => process.arch), arch);
   assert.equal(await window.evaluate(() => window.isSecureContext && typeof navigator.mediaDevices?.getUserMedia === 'function'), true);

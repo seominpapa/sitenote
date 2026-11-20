@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyTurn, createRecord, isOriginalSourceRef, parseCategoryPath, parseTranscript, renameSpeaker, searchContext, searchRecords, speakerLabel, transcriptMarkdown, type RecordData, type Turn } from './core.ts';
+import { applyTurn, createRecord, isOriginalSourceRef, isOriginalTurn, parseCategoryPath, parseTranscript, renameSpeaker, searchContext, searchRecords, speakerGroups, speakerLabel, transcriptMarkdown, turnEvidence, type RecordData, type Turn } from './core.ts';
 import { parseSummary, summaryMarkdown } from './markdown.ts';
 import { currentQuotedRefs, resolveOriginalSources, searchOriginalAnswers, searchPastOriginals } from '../recordContext.ts';
 
@@ -63,6 +63,52 @@ test('meeting speaker names remain scoped to their own connection and legacy lab
   assert.equal(speakerLabel(record, before), '김 담당 (화자 1)');
   assert.equal(speakerLabel(record, after), '발언자 미확인 (화자 1)');
   assert.deepEqual(parseTranscript(transcriptMarkdown(record)),record);
+});
+
+test('speaker management groups each connection, distinguishes matching numbers, and renames all its archived turns', () => {
+  const turns = [
+    turn('m1', '첫 원문입니다.', {speakerId:'meeting:a:1', timeMs:300}),
+    turn('m2', '다음 원문입니다.', {speakerId:'meeting:a:1', section:'meeting-ai', timeMs:350}),
+    turn('m3', '재연결 뒤 발언입니다.', {speakerId:'meeting:b:1', timeMs:400}),
+    turn('f1', '보충 답변 원문입니다.', {speakerId:'followup:c:1', section:'followup', timeMs:500}),
+    turn('f2', '추가 보충 답변입니다.', {speakerId:'followup:c:1', section:'followup', timeMs:550}),
+    turn('unknown', '화자 미확인 발언입니다.', {speakerId:undefined, timeMs:600}),
+    turn('ai', 'AI 발언입니다.', {role:'ai', speakerId:undefined, timeMs:650}),
+  ];
+  const original = turns.reduce((record,item) => applyTurn(record,item,date),make('r'));
+  assert.deepEqual(speakerGroups(original).map(({id, area, label, firstTurn, count}) => [id, area, label, firstTurn.id,count]), [
+    ['meeting:a:1','meeting','화자 1 · 구분 1','m1',2],
+    ['meeting:b:1','meeting','화자 1 · 구분 2','m3',1],
+    ['followup:c:1','followup','화자 1','f1',2],
+  ]);
+  const renamed = renameSpeaker(renameSpeaker(original, 'meeting:a:1', ' 김 담당 ', date), 'followup:c:1', '이 참가자', date);
+  const labels = renamed.turns.map(item => speakerLabel(renamed,item));
+  assert.deepEqual(labels.slice(0, 5), ['김 담당 (화자 1)','김 담당 (화자 1)','발언자 미확인 (화자 1)','이 참가자 (화자 1)','이 참가자 (화자 1)']);
+  assert.equal(turnEvidence(renamed,renamed.turns[4]!).speaker, '이 참가자 (화자 1)');
+  assert.deepEqual(speakerGroups(renamed).map(({name}) => name), ['김 담당','','이 참가자']);
+  const exported = transcriptMarkdown(renamed);
+  assert.match(exported, /### .*김 담당/);
+  assert.match(exported, /### .*이 참가자/);
+  assert.deepEqual(parseTranscript(exported).turns, original.turns);
+});
+
+test('typed followup prompts and answers retain labels in Markdown; only answers can be original evidence', () => {
+  const question = turn('question', '준공 날짜는?', {section:'followup', role:'user', speakerId:undefined, entry:'typed-question'});
+  const answer = turn('answer', '준공 날짜는 9월 1일입니다.', {section:'followup', role:'user', speakerId:undefined, entry:'typed-answer', timeMs:350});
+  const aiQuestion = {...question,id:'model-question',role:'ai' as const};
+  const record = [question,answer,aiQuestion].reduce((previous,item) => applyTurn(previous,item,date),make('r'));
+  const changed = applyTurn(record, {...answer, entry:undefined, text:'9월 2일입니다.'},date);
+  assert.equal(changed.turns.find(item => item.id === answer.id)?.entry, 'typed-answer');
+  assert.equal(isOriginalTurn(question), false);
+  assert.equal(isOriginalTurn(answer), true);
+  assert.equal(speakerLabel(record,question), '직접 입력한 질문');
+  assert.equal(speakerLabel(record,answer), '직접 입력한 답변');
+  assert.equal(speakerLabel(record,aiQuestion), 'AI 질문');
+  assert.deepEqual(parseTranscript(transcriptMarkdown(changed)),changed);
+  assert.throws(() => applyTurn(record,{...question,section:'meeting'}));
+  assert.throws(() => applyTurn(record,{...answer,role:'ai'}));
+  assert.throws(() => applyTurn(record,{...answer,role:'speaker'}));
+  assert.throws(() => applyTurn(record,{...answer,entry:'manual' as Turn['entry']}));
 });
 
 test('the shared category path round-trips and library search finds either category level', () => {

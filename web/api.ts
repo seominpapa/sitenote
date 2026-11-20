@@ -1,5 +1,6 @@
 import { compactParts, draftContext } from '../src/workflow.ts';
 import { isCategoryPath, type RecordData } from '../src/records/core.ts';
+import { TYPED_QUESTION_LIMIT, typedJudgeRequest, typedQuestionRequest, type TypedVerdict } from '../src/typedFollowup.ts';
 
 export type Health = { ok: true; providers: { live: boolean; soniox: boolean; text: boolean } };
 export type ProviderKeys = { openaiKey?: string; sonioxKey?: string };
@@ -22,6 +23,20 @@ export const health = () => request<Health>('/health');
 export const saveKeys = (keys: ProviderKeys) => request<Health>('/settings/keys', keys);
 export const answer = (question: string, context: string) =>
   request<{ answer: string }>('/answer', { question, context });
+
+export async function nextTypedQuestion(body: NonNullable<ReturnType<typeof typedQuestionRequest>>): Promise<string | null> {
+  const result = await request<{ question?: unknown }>('/followup', body);
+  if (result?.question === null) return null;
+  if (typeof result?.question === 'string' && result.question.trim() && result.question.length <= TYPED_QUESTION_LIMIT) return result.question.trim();
+  throw Error('AI 보충 질문 응답을 읽지 못했습니다.');
+}
+
+export async function judgeTypedAnswer(body: ReturnType<typeof typedJudgeRequest>): Promise<TypedVerdict> {
+  const result = await request<{ verdict?: unknown }>('/followup', body);
+  const verdict = result?.verdict;
+  if (verdict === 'advance' || verdict === 'clarify' || verdict === 'wait' || verdict === 'complete') return verdict;
+  throw Error('AI 답변 확인 결과를 읽지 못했습니다.');
+}
 
 export type CategoryAssignment = { id: string; path: string[] };
 const classifyBatchSize = 24;

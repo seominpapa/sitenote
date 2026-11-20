@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { searchRecords, speakerDisplayId, speakerLabel, timeLabel, type Evidence, type RecordData, type Turn } from '../src/records/core.ts';
+import { searchRecords, speakerGroups, speakerLabel, timeLabel, type Evidence, type RecordData, type Turn } from '../src/records/core.ts';
 import { date, Icon, type Jump } from './ui.tsx';
 import { pastSources, SavedSources, SourceLink, VoiceSources } from './source-panels.tsx';
 import { currentQuotedRefs } from '../src/recordContext.ts';
@@ -9,6 +9,8 @@ import { exportRecords } from './store.ts';
 import type { Health, ProviderKeys } from './api.ts';
 import { categoryTree, type CategoryNode } from './library.ts';
 import { listenForVoiceConsent, type ConsentAudio, type ConsentState } from './voice-consent.ts';
+import { pendingTypedQuestions, type TypedPair } from '../src/typedFollowup.ts';
+import { TypedFollowup } from './typed-followup.tsx';
 
 export type LibraryView = 'date' | 'category';
 export const categoryBatchLimit = 120;
@@ -235,6 +237,7 @@ const phases: Record<Snapshot['phase'], string> = {
 const sectionNames: Record<Turn['section'], string> = { personal: '개인 대화', meeting: '회의', 'meeting-ai': '질의응답', followup: '보충 질문' };
 
 function transcriptSpeaker(record: RecordData, turn: Turn) {
+  if (turn.entry) return speakerLabel(record, turn);
   if (turn.section === 'followup' && turn.role === 'ai') return 'AI 질문';
   const label = speakerLabel(record, turn);
   if (turn.section !== 'followup') return label;
@@ -479,8 +482,8 @@ const consentMessages: Record<ConsentState, string> = {
   accepted: '보충 질문에 동의했습니다. 음성을 연결하고 있습니다.',
 };
 
-function FollowupInvitation({ issue, prepared, accept, dismiss, keySettings }: {
-  issue?: string; prepared?: ConsentAudio; accept: () => void; dismiss: () => void; keySettings: () => void;
+function FollowupInvitation({ issue, prepared, accept, typeAnswer, dismiss, keySettings }: {
+  issue?: string; prepared?: ConsentAudio; accept: () => void; typeAnswer: () => void; dismiss: () => void; keySettings: () => void;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const control = useRef<(keepCapture?: boolean) => void>(() => {});
@@ -564,18 +567,47 @@ function FollowupInvitation({ issue, prepared, accept, dismiss, keySettings }: {
         {prepared ? consentMessages[state] : consentMessages.unavailable}</p>}
     <div className="actions">
       <button className="button primary" disabled={!!issue || state === 'accepted'} onClick={() => choose(accept, true)}>보충 질문 시작</button>
+      <button className="button quiet" onClick={() => choose(typeAnswer)}>글로 보충하기</button>
       <button className="button quiet" onClick={() => choose(dismiss)}>이대로 마치기</button>
       {issue && <button className="button quiet" onClick={() => choose(keySettings)}>API 키 설정</button>}
     </div>
   </section>;
 }
 
+function SpeakerNames({record, busy, rename}: {record: RecordData; busy: boolean; rename(id: string, name: string): void}) {
+  const groups = speakerGroups(record);
+  if (!groups.length) return null;
+  return <details className="edit-record">
+    <summary>화자 이름 관리 · {groups.length}개 그룹</summary>
+    <p className="muted">한 그룹의 모든 발언에 이름을 적용합니다. 녹음 연결이 달라지면 같은 번호라도 동일인인지 확인할 수 없습니다.</p>
+    {(['meeting','followup'] as const).map(area => {
+      const speakers = groups.filter(group => group.area === area);
+      return !!speakers.length && <section key={area}>
+        <h3>{area === 'followup' ? '회의 후 보충 대화' : '회의 원문'}</h3>
+        {speakers.map(({id,label,firstTurn,count,name}) => <form className="inline" key={id} onSubmit={event => {
+          event.preventDefault();
+          rename(id, String(new FormData(event.currentTarget).get('speaker') ?? ''));
+        }}>
+          <label>이름 · {label} · 첫 발언 {timeLabel(firstTurn.timeMs)}
+            <small className="muted">{count}개 발언 · {firstTurn.text.slice(0,100)}</small>
+            <input key={name} name="speaker" maxLength={100} defaultValue={name} placeholder="발언자 미확인" disabled={busy} />
+          </label>
+          <button className="button quiet" disabled={busy}>화자 이름 저장</button>
+        </form>)}
+      </section>;
+    })}
+  </details>;
+}
+
 type NoteEdits = { title?: string; project?: string; allowInMeetings?: boolean; categoryPath?: string };
 
 export function Detail({ record, related, part, busy, open, back, summarize, followup, offerFollowup, followupIssue, consentAudio,
+  typedFollowup, typedAIAvailable, openTypedFollowup, closeTypedFollowup, loadTypedFollowup, saveTypedFollowup,
   dismissFollowup, keySettings, save, rename, remove }: {
   record: RecordData; related: Evidence[]; part?: string; busy: boolean; open: Jump; back: () => void; summarize: () => void; followup: () => void;
   offerFollowup: boolean; followupIssue?: string; consentAudio?: ConsentAudio; dismissFollowup: () => void; keySettings: () => void;
+  typedFollowup: boolean; typedAIAvailable: boolean; openTypedFollowup(): void; closeTypedFollowup(): void;
+  loadTypedFollowup(): Promise<RecordData | undefined>; saveTypedFollowup(pair: TypedPair): Promise<void>;
   save(edits: NoteEdits): void; rename(speakerId: string, name: string): void; remove(): void;
 }) {
   const editBaseline = useRef(new Map<string, string | boolean>());
@@ -586,7 +618,6 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
       target.scrollIntoView({ block: 'center' });
     }
   }, [part, record.id]);
-  const speakers = [...new Set(record.turns.flatMap(turn => turn.speakerId ? [turn.speakerId] : []))];
   const original = record.turns.filter(turn => turn.section !== 'followup');
   const supplemental = record.turns.filter(turn => turn.section === 'followup');
   const sources = pastSources(record.id, related);
@@ -604,11 +635,17 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
       {record.category && <p className="muted">분류: {record.category.join(' / ')}</p>}
       <div className="actions">
         <button className="button primary" disabled={busy || !record.turns.length} onClick={summarize}>{busy ? '처리 중…' : record.summary ? '요약 다시 만들기' : '요약 만들기'}</button>
-        {!offerFollowup && record.kind === 'meeting' && !!original.length && <button className="button quiet" disabled={busy} onClick={followup}>보충 질문하기</button>}
+        {!offerFollowup && !typedFollowup && record.kind === 'meeting' && !!original.length && <>
+          <button className="button quiet" disabled={busy} onClick={followup}>보충 질문하기</button>
+          <button className="button quiet" disabled={busy} onClick={openTypedFollowup}>글로 보충하기</button>
+        </>}
         <button className="button quiet" onClick={() => exportRecords([record])}><Icon name="download" /> Markdown 내보내기</button>
       </div>
     </div>
-    {offerFollowup && <FollowupInvitation issue={followupIssue} prepared={consentAudio} accept={followup} dismiss={dismissFollowup} keySettings={keySettings} />}
+    {offerFollowup && <FollowupInvitation issue={followupIssue} prepared={consentAudio} accept={followup} typeAnswer={openTypedFollowup}
+      dismiss={dismissFollowup} keySettings={keySettings} />}
+    {typedFollowup && <TypedFollowup aiAvailable={typedAIAvailable} hasCachedQuestions={!!pendingTypedQuestions(record).length}
+      busy={busy} load={loadTypedFollowup} save={saveTypedFollowup} close={closeTypedFollowup} />}
     <section id="summary" className="summary" tabIndex={-1}>
       <h2>요약</h2>
       {summary.length ? summary : <p className="muted">아직 요약이 없습니다.</p>}
@@ -643,12 +680,8 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
         {record.kind === 'personal' && <label className="checkbox"><input type="checkbox" name="excludeFromMeetings" defaultChecked={!record.allowInMeetings} /> 회의에서 이 개인 기록 참고하지 않음</label>}
         <div className="actions"><button className="button primary" disabled={busy}>기록 설정 저장</button><button type="button" className="button danger" onClick={remove} disabled={busy}>기록 삭제</button></div>
       </form>
-      {speakers.map(id => <form className="inline" key={id} onSubmit={event => {
-        event.preventDefault();
-        rename(id, String(new FormData(event.currentTarget).get('speaker')));
-      }}><label>{id.startsWith('followup:') ? '보충 질문 ' : ''}화자 {speakerDisplayId(id)}{speakers.some(other => other !== id && speakerDisplayId(other) === speakerDisplayId(id)) && ` · 첫 발언 ${timeLabel(record.turns.find(turn => turn.speakerId === id)!.timeMs)}`}<input name="speaker" maxLength={100} defaultValue={record.speakers[id]} /></label>
-        <button className="button quiet" disabled={busy}>화자 이름 저장</button></form>)}
     </details>
+    <SpeakerNames record={record} busy={busy} rename={rename} />
     <h2>원문 · {original.length}개 발언</h2>
     {original.length ? <Transcript turns={original} record={record} afterTurn={answerSources} /> : <div className="empty">아직 전사된 발언이 없습니다.</div>}
     {!!supplemental.length && <><h2>회의 후 보충 질문 · {supplemental.length}개 발언</h2><Transcript turns={supplemental} record={record} afterTurn={answerSources} /></>}
@@ -733,6 +766,6 @@ export function Settings({ health, checked, busy, refresh, save }: {
         <p className="muted">표시된 상태는 키가 설정됐는지를 알려줍니다. 키의 유효성과 서비스 연결은 해당 기능을 실행할 때 확인됩니다.</p>
       </form>
     </div>
-    <p className="muted">원문과 요약은 이 브라우저에 저장되며 다른 브라우저와 자동으로 공유되지 않습니다.</p>
+    <p className="muted">원문과 요약은 로컬 PC에 저장됩니다. 웹앱과 데스크톱 앱은 기록을 따로 보관하며, 다른 브라우저와도 자동으로 동기화되지 않습니다.</p>
   </section>;
 }

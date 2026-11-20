@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, BackHandler, Modal, Text, View } from 'react-native';
 import * as Sharing from 'expo-sharing';
-import { answer, health, loadSettings, saveSettings, summarize, type Health, type Settings } from './api';
+import { answer, generateFollowup, health, judgeFollowup, loadSettings, saveSettings, summarize, type Health, type Settings } from './api';
 import { createRecord, renameSpeaker, searchContext, type RecordData } from './records/core';
 import { recordStore } from './records/expo';
 import { analysisContext, resolveOriginalSources, searchOriginalAnswers } from './recordContext';
 import { citationParts, validateConnection } from './workflow';
+import { appendTypedFollowup, typedJudgeRequest, typedQuestionRequest } from './typedFollowup';
 import { Button, Field, Notice, Page, styles } from './ui/base';
 import { Details, Home } from './ui/Library';
+import type { SupplementActions } from './ui/Supplement';
 import { SearchPage, SettingsPage, type SearchResult } from './ui/SettingsSearch';
 import { Voice, type VoiceOutcome } from './Voice';
 import type { Mode } from './ui/Active';
@@ -72,6 +74,39 @@ export default function App() {
     try { await task(); }
     catch (error) { setStatus(message(error, fallback)); }
     finally { busy.current = false; setWorking(false); }
+  }
+
+  async function supplementAction<T>(task: () => Promise<T>): Promise<T> {
+    if (busy.current) throw new Error('기록 처리 중입니다. 잠시 뒤 다시 시도해 주세요.');
+    busy.current = true;
+    setWorking(true);
+    setStatus(undefined);
+    try { return await task(); }
+    finally { busy.current = false; setWorking(false); }
+  }
+
+  function supplement(record: RecordData): SupplementActions {
+    const latest = () => {
+      const value = list.current.find(item => item.id === record.id);
+      if (!value) throw new Error('기록을 찾을 수 없습니다.');
+      return value;
+    };
+    const canGenerate = connection && typedQuestionRequest(record);
+    return {
+      save: pair => supplementAction(async () => {
+        const next = appendTypedFollowup(latest(), {...pair, id:createId()});
+        await recordStore.save(next);
+        publish(next);
+        setResult(undefined);
+      }),
+      generate: connection && canGenerate ? () => supplementAction(async () => {
+        const request = typedQuestionRequest(latest());
+        if (!request) throw new Error('AI 질문을 만들 회의 내용이 없습니다.');
+        return generateFollowup(connection, request);
+      }) : undefined,
+      judge: connection ? (question, answer, remaining) =>
+        supplementAction(() => judgeFollowup(connection, typedJudgeRequest(question, answer, remaining))) : undefined,
+    };
   }
 
   function withConnection() {
@@ -175,8 +210,8 @@ export default function App() {
     try {
       const latest = list.current.find(item => item.id === current.id) || current;
       const next = renameSpeaker(latest, speaker.id, speaker.name);
-      publish(next);
       await recordStore.save(next);
+      publish(next);
       setSpeaker(undefined);
     } catch (error) { Alert.alert('화자 이름을 저장하지 못했습니다', message(error, '저장 공간을 확인해 주세요.')); }
     finally { setRenameBusy(false); }
@@ -234,6 +269,7 @@ export default function App() {
         audioFiles={() => recordStore.audioFiles(current.id)}
         exportAudio={uri => { void action(() => Sharing.shareAsync(uri, {mimeType: 'audio/wav'}), '음성 사본을 내보내지 못했습니다.'); }}
         summary={() => { void makeSummary(current, '원문이 기기에 보관되어 있습니다.'); }}
+        supplement={supplement(current)}
         followup={() => { if (withConnection()) navigate({page: 'voice', id: current.id, mode: 'followup'}); }}/>
       : <Home records={records} connected={!!connection} start={start} open={jump} status={status}
           goSearch={() => navigate({page: 'search'})} goSettings={() => navigate({page: 'settings'})}/>)}

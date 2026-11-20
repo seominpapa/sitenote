@@ -30,7 +30,7 @@ export function validTextRequest(path, data) {
     && (data.history === undefined || validString(data.history, 8_000));
 }
 
-export async function providerText(options, {instructions, input, maxTokens, schema}) {
+export async function providerText(options, {instructions, input, maxTokens, schema, signal = AbortSignal.timeout(60_000)}) {
   const response = await options.transport('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
@@ -45,7 +45,7 @@ export async function providerText(options, {instructions, input, maxTokens, sch
       max_output_tokens: maxTokens,
       ...(schema ? { text: { format: schema } } : {}),
     }),
-    signal: AbortSignal.timeout(60_000),
+    signal,
   });
   if (!response.ok) throw new Error('text provider unavailable');
   const result = await response.json();
