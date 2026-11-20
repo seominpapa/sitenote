@@ -1,0 +1,16 @@
+{
+  "name": "sitenote-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SiteNote voice knowledge notebook",
+  "author": "SiteNote",
+  "main": "main.cjs",
+  "scripts": {
+    "dist:mac": "node build-macos.mjs",
+    "dist:win": "node build-windows.mjs"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0"
+  }
+}

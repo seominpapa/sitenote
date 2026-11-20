@@ -1,0 +1,5 @@
+.env
+.env.sitenote-keys.json*
+node_modules/
+*.pem
+*.key

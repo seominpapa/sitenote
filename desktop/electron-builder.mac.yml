@@ -1,0 +1,34 @@
+appId: com.sitenote.desktop
+productName: Sitenote
+directories:
+  output: ../dist/desktop-mac
+files:
+  - main.cjs
+  - runtime.cjs
+  - package.json
+extraResources:
+  - from: ../dist/runtime
+    to: runtime
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  artifactName: Sitenote-macOS-${arch}.${ext}
+  category: public.app-category.productivity
+  icon: icon.svg
+  identity: '-'
+  hardenedRuntime: true
+  entitlements: entitlements.mac.plist
+  entitlementsInherit: entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: Sitenote에서 대화와 회의의 음성을 기록하려면 마이크가 필요합니다.
+dmg:
+  sign: false
+  contents:
+    - x: 130
+      y: 220
+      type: file
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications

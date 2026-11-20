@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["SiteAudioModule"] },
+  "android": { "modules": ["expo.modules.siteaudio.SiteAudioModule"] }
+}

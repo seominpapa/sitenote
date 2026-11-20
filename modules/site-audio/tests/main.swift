@@ -1,0 +1,31 @@
+import Foundation
+
+let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+let records = root.appendingPathComponent("records/id-A_1", isDirectory: true)
+try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: root) }
+
+let transcript = records.appendingPathComponent("transcript.md")
+try SiteAudioFiles.writeText(transcript.absoluteString, "첫 원문", documents: root)
+try SiteAudioFiles.writeText(transcript.absoluteString, "수정", documents: root)
+let text = try String(contentsOf: transcript, encoding: .utf8)
+assert(text == "수정")
+let unrelated = records.appendingPathComponent("other.md")
+assert((try? SiteAudioFiles.writeText(unrelated.absoluteString, "blocked", documents: root)) == nil)
+let link = root.appendingPathComponent("records/link")
+try FileManager.default.createSymbolicLink(at: link, withDestinationURL: records)
+let linkFile = link.appendingPathComponent("transcript.md")
+assert((try? SiteAudioFiles.writeText(linkFile.absoluteString, "blocked", documents: root)) == nil)
+
+let wav = records.appendingPathComponent("audio-2a.wav")
+let writer = try WaveArchive(uri: wav.absoluteString, documents: root)
+try writer.append(Data([0x10, 0x20, 0x00, 0x00]))
+try writer.finish()
+let bytes = try Data(contentsOf: wav)
+assert(bytes.count == 48)
+assert(String(data: bytes.prefix(4), encoding: .ascii) == "RIFF")
+assert(Array(bytes[24..<28]) == [0xc0, 0x5d, 0, 0])
+assert(Array(bytes[40..<44]) == [4, 0, 0, 0])
+assert(Array(bytes.suffix(4)) == [0x10, 0x20, 0, 0])
+assert((try? WaveArchive(uri: wav.absoluteString, documents: root)) == nil)
+print("Native record path and WAV checks passed")

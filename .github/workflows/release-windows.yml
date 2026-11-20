@@ -1,0 +1,54 @@
+name: Verify released Windows app
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Fetch tagged smoke test and release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          git clone --quiet --depth 1 --branch "$env:TAG" "https://github.com/$env:GITHUB_REPOSITORY.git" src
+          if ($LASTEXITCODE) { throw "Could not fetch release tag" }
+          gh release download "$env:TAG" --repo "$env:GITHUB_REPOSITORY" --pattern Sitenote-Windows-x64.exe --pattern Sitenote-Desktop.zip --pattern SHA256SUMS.txt --dir artifacts
+          if ($LASTEXITCODE) { throw "Could not download published files" }
+      - name: Verify checksum and launch the published EXE
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'artifacts/Sitenote-Windows-x64.exe').Path
+          $actual = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sums = Get-Content 'artifacts/SHA256SUMS.txt'
+          if ($sums -cnotcontains "$actual  Sitenote-Windows-x64.exe") { throw "Checksum mismatch" }
+          & ./src/desktop/smoke-windows.ps1 -Exe $exe
+      - name: Start the published CMD launcher
+        shell: pwsh
+        run: |
+          $zip = 'artifacts/Sitenote-Desktop.zip'
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Content 'artifacts/SHA256SUMS.txt') -cnotcontains "$hash  Sitenote-Desktop.zip") { throw "ZIP checksum mismatch" }
+          Expand-Archive $zip -DestinationPath 'browser test'
+          $env:SITE_WEB_PORT = '18788'
+          $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d /c Sitenote.cmd --no-open' -WorkingDirectory 'browser test' -PassThru
+          try {
+            $root = 'http://127.0.0.1:18788'
+            $deadline = [datetime]::UtcNow.AddSeconds(30)
+            do {
+              try { $status = Invoke-RestMethod "$root/__sitenote/ready" -TimeoutSec 2 } catch { $status = $null }
+              if ($status.app -eq 'sitenote-web') { break }
+              Start-Sleep -Milliseconds 400
+            } while (!$process.HasExited -and [datetime]::UtcNow -lt $deadline)
+            if ($status.app -ne 'sitenote-web') { throw "CMD launcher did not start" }
+            if ((Invoke-WebRequest "$root/").Content -notmatch 'Sitenote') { throw "Web app did not load" }
+          } finally {
+            if (!$process.HasExited) { taskkill /t /f /pid $process.Id }
+          }

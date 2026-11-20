@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "SiteNote",
+    "slug": "sitenote",
+    "version": "0.1.0",
+    "orientation": "default",
+    "userInterfaceStyle": "light",
+    "plugins": [["expo-secure-store", {"configureAndroidBackup": false, "faceIDPermission": false}]],
+    "ios": {
+      "bundleIdentifier": "com.sitenote.app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSAllowsLocalNetworking": true,
+          "NSExceptionDomains": {
+            "localhost": {"NSExceptionAllowsInsecureHTTPLoads": true}
+          }
+        },
+        "NSMicrophoneUsageDescription": "개인 음성 대화와 회의를 기록하기 위해 마이크를 사용합니다.",
+        "NSLocalNetworkUsageDescription": "같은 네트워크에서 실행 중인 개인 SiteNote 서버에 연결합니다."
+      }
+    },
+    "android": {
+      "package": "com.sitenote.app",
+      "allowBackup": false,
+      "permissions": ["android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS"],
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    }
+  }
+}

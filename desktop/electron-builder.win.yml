@@ -1,0 +1,20 @@
+appId: com.sitenote.desktop
+productName: Sitenote
+directories:
+  output: ../dist/desktop-windows
+files:
+  - main.cjs
+  - runtime.cjs
+  - package.json
+extraResources:
+  - from: ../dist/runtime
+    to: runtime
+win:
+  target:
+    - target: portable
+      arch: [x64]
+  signAndEditExecutable: false
+portable:
+  artifactName: Sitenote-Windows-${arch}.${ext}
+  requestExecutionLevel: user
+  unpackDirName: false
