@@ -2,7 +2,7 @@
 
 개인 음성 대화와 대면 회의를 기록하고 이어서 물을 수 있는 **Mac·Windows용 데스크톱 앱**입니다. 같은 컴퓨터의 브라우저에서 로컬 웹앱으로도 쓸 수 있습니다. 두 방식 모두 별도 서버를 구축할 필요 없이 Sitenote 설정에서 API 키를 등록합니다.
 
-기존 Android APK는 별도 서버를 운영하는 경우에 사용할 수 있습니다. Soniox·OpenAI API 키를 휴대폰에 보관하지 않도록 설계되어, 실시간 전사·AI 답변·요약에는 [별도의 HTTPS 중계 서버](#android용-https-중계-서버-설정)가 필요합니다.
+새 버전은 Mac·Windows 데스크톱 앱과 로컬 웹앱만 배포합니다. 기존 Android APK는 내려받을 수 있으며, 실시간 전사·AI 답변·요약을 쓰려면 Soniox·OpenAI API 키를 휴대폰 대신 [별도의 HTTPS 중계 서버](#android용-https-중계-서버-설정)에 등록해야 합니다.
 
 ## 다운로드
 
@@ -160,7 +160,13 @@ npm --prefix desktop run dist:mac    # macOS에서 DMG
 npm --prefix desktop run dist:win    # Windows x64 휴대용 EXE
 ```
 
-ZIP은 `dist/Sitenote-Desktop.zip`, DMG는 `dist/desktop-mac/`, EXE는 `dist/desktop-windows/`에 생성됩니다. Android 빌드는 [APK 빌드·서명 안내](scripts/android-release.md)를 따르세요. 공식 APK를 덮어쓸 수 있는 업데이트는 원래 서명 키로만 만들 수 있습니다.
+웹 ZIP, Mac DMG 두 개, Windows EXE는 각각 빌드한 컴퓨터의 `dist/`에 생성됩니다. 배포할 컴퓨터의 `dist/`에 이 파일들을 모으고, 사용한 라이브러리와 라이선스를 반영한 `THIRD-PARTY-NOTICES.txt`도 같은 폴더에 둡니다.
+
+```sh
+node scripts/stage-release.mjs
+```
+
+위 명령이 출력한 새 폴더의 파일만 새 GitHub 릴리스에 첨부합니다. 이 폴더에는 웹 ZIP, Mac DMG 두 개, Windows EXE, 고지문과 새 `SHA256SUMS.txt`만 들어갑니다. `dist/`에 이전 APK가 남아 있어도 새 릴리스에는 포함되지 않습니다. 기존 Android APK는 [v0.1.4](https://github.com/seominpapa/sitenote/releases/tag/v0.1.4)에서 계속 제공하며, 이후 릴리스용 APK는 빌드하지 않습니다.
 
 ## 4. 검증
 
@@ -169,6 +175,7 @@ npm run typecheck
 npm run test:coverage
 npm --prefix server test
 npm run test:integration
+node --test scripts/*.test.mjs
 npm run web:build
 npm run test:web     # Chrome 필요, 모의 음성 제공자와 가상 마이크 사용
 EXPO_NO_TELEMETRY=1 npm run prebuild -- --no-install
