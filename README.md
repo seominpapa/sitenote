@@ -1,6 +1,8 @@
 # Sitenote
 
-개인 음성 대화와 대면 회의를 기록하고 이어서 물을 수 있는 앱입니다. Mac·Windows에서는 데스크톱 앱이나 로컬 웹앱으로, iOS·Android에서는 네이티브 앱으로 사용합니다. Expo Go에서는 네이티브 오디오 모듈을 실행할 수 없습니다.
+개인 음성 대화와 대면 회의를 기록하고 이어서 물을 수 있는 **Mac·Windows용 데스크톱 앱**입니다. 같은 컴퓨터의 브라우저에서 로컬 웹앱으로도 쓸 수 있습니다. 두 방식 모두 별도 서버를 구축할 필요 없이 Sitenote 설정에서 API 키를 등록합니다.
+
+기존 Android APK는 별도 서버를 운영하는 경우에 사용할 수 있습니다. Soniox·OpenAI API 키를 휴대폰에 보관하지 않도록 설계되어, 실시간 전사·AI 답변·요약에는 [별도의 HTTPS 중계 서버](#android용-https-중계-서버-설정)가 필요합니다.
 
 ## 다운로드
 
@@ -12,7 +14,6 @@
 | Mac · Intel | [Sitenote-macOS-x64.dmg](https://github.com/seominpapa/sitenote/releases/latest/download/Sitenote-macOS-x64.dmg) | Intel Mac에서 DMG를 열어 Sitenote를 응용 프로그램 폴더로 옮긴 뒤 실행 |
 | Windows · 64비트 Intel/AMD | [Sitenote-Windows-x64.exe](https://github.com/seominpapa/sitenote/releases/latest/download/Sitenote-Windows-x64.exe) | 다운로드한 휴대용 EXE를 더블클릭 |
 | Mac·Windows · 브라우저로 사용 | [Sitenote-Desktop.zip](https://github.com/seominpapa/sitenote/releases/latest/download/Sitenote-Desktop.zip) | 압축을 전부 풀고 Mac은 `Sitenote.command`, Windows는 `Sitenote.cmd` 실행 |
-| Android · ARM64 | [Sitenote-Android-arm64.apk](https://github.com/seominpapa/sitenote/releases/latest/download/Sitenote-Android-arm64.apk) | 휴대폰에서 APK를 열어 설치. 음성 기능에는 아래의 HTTPS 서버 설정 필요 |
 
 [버전별 배포 파일](https://github.com/seominpapa/sitenote/releases) · [SHA-256 체크섬](https://github.com/seominpapa/sitenote/releases/latest/download/SHA256SUMS.txt)
 
@@ -79,42 +80,48 @@ v0.1.1부터 앱이 시작할 때 GitHub의 공개 릴리스를 확인합니다.
 
 **분류별 → 새 폴더**에서 `업무 / 안전 점검`처럼 최대 3단계로 폴더를 만들 수 있습니다. 폴더의 **기록 추가**로 기존 녹음을 그 폴더로 옮깁니다. 노트의 **기록 설정 → 분류**에서도 경로를 수정할 수 있고, **AI 자동 분류**로 미분류 기록만 같은 트리에 넣을 수 있습니다. AI 분류를 누르면 제목, 프로젝트, 요약 또는 원문 일부가 OpenAI로 전송됩니다. **검색**에서 제목, 프로젝트, 분류, 원문과 요약을 찾을 수 있습니다. 검색 화면에서 AI에게 질문할 때는 사람의 발언만 사용합니다.
 
-## Android 휴대폰에 직접 설치
+## Android 휴대폰에 직접 설치 (별도 서버 필요)
 
-1. Android 휴대폰에서 위 **APK 다운로드** 링크를 누릅니다.
+1. Android 휴대폰에서 [기존 0.1.4 ARM64 APK](https://github.com/seominpapa/sitenote/releases/download/v0.1.4/Sitenote-Android-arm64.apk)를 내려받습니다.
 2. 휴대폰 **파일 → 다운로드**에서 APK를 열고 **설치**를 누릅니다. Android가 막으면 안내에 따라 APK를 연 앱에 **이 출처 허용**을 켠 뒤 설치 화면으로 돌아옵니다. 설치가 끝나면 허용을 다시 끌 수 있습니다.
-3. 홈 화면의 **SiteNote**를 엽니다. 이 APK는 내부에 앱을 포함하므로 USB, Metro, Expo Go가 필요 없습니다. 음성 기능에는 앱 **설정 → 서버 연결**에 휴대폰이 접속할 수 있는 **HTTPS 서버 주소와 접근 토큰**을 입력합니다. USB 테스트 때 썼던 `127.0.0.1` 주소는 쓰지 않습니다.
+3. 홈 화면의 **Sitenote**를 엽니다. 설치에 USB나 Expo Go는 필요 없습니다. 전사·AI 기능을 사용하려면 아래 중계 서버를 설정하세요.
 
 휴대폰에서 모든 노트를 저장하려면 **설정 → 저장 및 내보내기 → 전체 내보내기 (ZIP)**를 선택하고, 공유 화면에서 파일을 저장할 곳을 고르세요.
 
-Android에서도 **최근 노트 → 노트 추가**로 같은 문서를 기기에서 가져오고, **설정 → 노트 저장 폴더**에서 파일 앱으로 볼 수 있는 폴더를 선택할 수 있습니다. 새 위치를 선택하면 녹음한 노트의 원문과 요약, 가져온 문서의 Markdown과 텍스트 사본을 `Sitenote` 하위 폴더에 복사합니다. 선택한 폴더가 없으면 앱 내부에 보관합니다. AI 답변의 근거를 열고 **원본 파일 열기**를 누르면 앱에 보관된 업로드 파일을 연결된 앱에서 열 수 있습니다.
+Android에서도 **최근 노트 → 노트 추가**로 문서를 기기에서 가져오고, **설정 → 노트 저장 폴더**에서 파일 앱으로 볼 수 있는 폴더를 선택할 수 있습니다. Android 0.1.4에서는 텍스트 PDF를 가져오다가 멈출 수 있으므로 PDF는 데스크톱에서 가져오세요. 새 위치를 선택하면 녹음한 노트의 원문과 요약, 가져온 문서의 Markdown과 텍스트 사본을 `Sitenote` 하위 폴더에 복사합니다. 선택한 폴더가 없으면 앱 내부에 보관합니다. AI 답변의 근거를 열고 **원본 파일 열기**를 누르면 앱에 보관된 업로드 파일을 연결된 앱에서 열 수 있습니다.
 
 이 파일은 ARM64 Android용입니다. Android 15 에뮬레이터에서 설치 후 Metro 없이 홈 화면이 열리는 것을 확인했습니다. 이전 디버그 APK와는 서명이 달라 덮어쓸 수 없습니다. 디버그 앱에 남겨 둘 기록이 있다면 삭제하기 전에 내보내세요. 새 배포본을 기존 설치 위에 업데이트하려면 동일한 앱 ID와 서명 키를 사용합니다. 비공개 서명 파일은 `.local-signing/`에 보관하며 APK와 함께 복사하거나 공유하지 않습니다.
 
-## 1. 서버 실행
+### Android용 HTTPS 중계 서버 설정
 
-Node 22.18 이상을 사용합니다. 운영하는 서버에 서비스 키를 준비한 뒤 다음을 실행합니다.
+휴대폰에는 **서버 주소와 Sitenote 전용 접근 토큰**만 입력합니다. Soniox·OpenAI API 키는 서버에만 보관합니다. 아래는 **계속 켜 둘 수 있는 Linux 서버 한 대**에 Sitenote 서버와 [Caddy](https://caddyserver.com/docs/install)를 함께 두는 예입니다. 데스크톱 앱이나 `.command`·`.cmd`로 연 `127.0.0.1:8787`을 그대로 휴대폰에 입력하면 연결되지 않습니다.
 
-```sh
-npm --prefix server ci
-cp server/.env.example server/.env
-openssl rand -hex 32
-# server/.env에 생성한 SITE_ACCESS_TOKEN과 서비스 키를 입력
-npm --prefix server start
-```
+1. **Sitenote 서버 준비.** 서버에 Node.js 22.18 이상을 설치하고 이 저장소를 내려받습니다. 프로젝트 폴더에서 아래를 실행하세요. 이미 `server/.env`가 있다면 그대로 사용합니다.
 
-| 환경변수 | 용도 |
-| --- | --- |
-| `SITE_ACCESS_TOKEN` | 32자 이상 앱 접속 전용 토큰. 서버와 앱 설정에 같은 값을 입력 |
-| `OPENAI_API_KEY` | 서버에서만 사용하는 OpenAI 키. 녹음 중 AI 답변, 회의 후 보충질문, 목소리 들어보기에 모두 `gpt-live-1.1` 접근 필요 |
-| `SONIOX_API_KEY` | 서버에서만 사용하는 Soniox 실시간 전사 키 |
-| `OPENAI_TEXT_MODEL` | 요약·검색의 Responses 모델. 기본 `gpt-5.4-mini` |
-| `SITE_HOST`, `SITE_PORT` | 기본 `127.0.0.1:8787` |
-| `SITE_TLS_CERT`, `SITE_TLS_KEY` | 외부 기기에서 사용할 때 신뢰받는 인증서와 개인 키 PEM 경로 |
+   ```sh
+   npm --prefix server ci
+   test -f server/.env || cp server/.env.example server/.env
+   chmod 600 server/.env
+   openssl rand -hex 32
+   ```
 
-실기기에서 연결할 때는 기기가 신뢰하는 인증서가 적용된 HTTPS 주소를 사용합니다. 직접 TLS를 설정하거나 루프백 서버 앞에 사용자가 관리하는 HTTPS 역방향 프록시를 둘 수 있습니다. 프록시에서는 `/stream`의 WebSocket 업그레이드와 Bearer 헤더를 전달합니다. 서버는 참가자 음성, 원문, 요약을 디스크에 보관하지 않습니다. Soniox가 참가자 발언을 전사합니다. 녹음 중 질의응답에는 확정된 질문 텍스트와 참고 기록 일부가 OpenAI로 전달되고, 마이크 음성은 Soniox로만 전달됩니다.
+   `server/.env`의 `SITE_ACCESS_TOKEN`에 생성한 값을 넣고, `SONIOX_API_KEY`에는 전사용 키, `OPENAI_API_KEY`에는 AI 답변·요약용 키를 넣으세요. 음성 답변에는 `gpt-live-1.1` 접근 권한이 필요합니다. 이 파일은 GitHub에 올리거나 공유하지 마세요. `SITE_HOST=127.0.0.1`, `SITE_PORT=8787`은 그대로 두고 `npm --prefix server start`를 실행합니다.
 
-## 2. 앱 실행
+2. **HTTPS 주소 연결.** 사용할 도메인의 DNS를 서버 IP로 지정하고 서버 방화벽에서 TCP **80·443**을 허용하세요. **8787은 외부에 열지 않습니다.** 같은 서버의 Caddy 설정 파일(일반적으로 `/etc/caddy/Caddyfile`)에 아래를 추가합니다. `sitenote.example.com`은 본인 도메인으로 바꿉니다. Caddy가 HTTPS 인증서 발급을 처리하고, `/stream`의 실시간 음성 연결(WebSocket)과 앱 인증 헤더를 Sitenote로 전달합니다.
+
+   ```caddyfile
+   sitenote.example.com {
+       reverse_proxy 127.0.0.1:8787
+   }
+   ```
+
+   Linux 서비스로 설치했다면 `sudo systemctl enable --now caddy`로 시작합니다. 이미 실행 중이면 `sudo systemctl reload caddy`로 설정을 적용하세요. [Caddy 설정 참고](https://caddyserver.com/docs/quick-starts/reverse-proxy)
+
+3. **휴대폰 연결.** Sitenote의 **설정 → 서버 연결**에 `https://sitenote.example.com`과 위에서 지정한 `SITE_ACCESS_TOKEN`을 입력한 뒤 **연결 확인 및 저장**을 누릅니다. 연결을 확인한 다음 짧게 녹음해서 전사와 AI 답변을 각각 확인하세요. 모바일 전사·AI 기능을 쓰는 동안 서버와 Caddy가 모두 실행 중이어야 합니다.
+
+서버는 참가자 음성, 원문, 요약을 디스크에 보관하지 않습니다. Soniox가 참가자 발언을 전사합니다. 녹음 중 질의응답에는 확정된 질문 텍스트와 참고 기록 일부가 OpenAI로 전달되고, 마이크 음성은 Soniox로만 전달됩니다.
+
+## 모바일 개발용 실행
 
 ```sh
 npm ci
@@ -130,7 +137,7 @@ npm start        # 이미 설치된 개발 빌드에 Metro를 다시 연결할 �
 - **보완 대화**: 회의 원문 저장 후 만들어진 요약에서 시작합니다. 음성 질문을 건너뛰거나 종료할 수 있고, 보완 발언은 회의 원문과 구분됩니다. 종료하면 요약을 다시 만듭니다.
 - **검색**: 이 기기의 원문 및 요약에서 단어 변형·한국어 용어의 유의어를 찾고, 관련 구간으로 이동합니다. 새 개인 기록은 기본으로 회의 중 AI의 참고 대상입니다. 기록 상세에서 **회의에서 이 개인 기록 참고하지 않음**을 켜면 제외할 수 있습니다. 검색은 정상 완료와 조회 실패를 다르게 표시합니다.
 
-## 3. 파일과 복구
+## 모바일 앱 파일과 복구
 
 - 앱 내부 문서 폴더: `records/<record-id>/transcript.md`, `records/<record-id>/summary.md`. UTC로 저장하고 화면은 기기의 현지 시각을 사용합니다.
 - 음성 사본은 기본 꺼짐입니다. 켜면 녹음 구간별 `audio-*.wav`를 같은 폴더에 저장합니다. 다른 사람의 발언이 AI 재생 시간과 겹치면 짧은 구간은 음소거됩니다. 앱 강제 종료 시 마지막 WAV 헤더가 완성되지 않을 수 있습니다.
