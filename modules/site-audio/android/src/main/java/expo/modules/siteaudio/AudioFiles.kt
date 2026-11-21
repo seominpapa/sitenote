@@ -29,7 +29,7 @@ internal object AudioFiles {
   }
 
   fun writeText(documents: File, uri: String, text: String) {
-    val target = resolve(documents, uri, Regex("(?:transcript|summary)\\.md"))
+    val target = resolve(documents, uri, Regex("(?:transcript|summary|source)\\.md"))
     val temp = File.createTempFile(".record-", ".tmp", target.parentFile)
     try {
       temp.outputStream().use {

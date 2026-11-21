@@ -11,10 +11,11 @@ import type { Connection } from './workflow';
 import type { AiVoice } from '../server/voices.mjs';
 
 export type VoiceOutcome = {flushed: boolean; saved: boolean};
-export function Voice({mode, connection, keepAudio, record, getRecord, getRecords, save, onDone, rename, voice}: {
+export function Voice({mode, connection, keepAudio, record, getRecord, getRecords, save, onDone, rename, voice, openOriginal}: {
   mode: Mode; connection: Connection; keepAudio: boolean; record: RecordData; voice?: AiVoice;
   getRecord: () => RecordData; getRecords: () => RecordData[]; save: (value: RecordData) => Promise<void>;
   onDone: (outcome: VoiceOutcome) => void; rename: (id: string) => void;
+  openOriginal: (value: RecordData) => void;
 }) {
   useKeepAwake('sitenote-voice');
   const [source, setSource] = useState<{record: RecordData; turnId?: string}>();
@@ -66,6 +67,7 @@ export function Voice({mode, connection, keepAudio, record, getRecord, getRecord
     record.turns.slice(-80).flatMap(turn => turn.sourceRefs ?? []).concat(snapshot.references));
   return <Active mode={mode} session={session} snapshot={snapshot} record={record} evidence={evidence} rename={rename}
     warning={warning} finish={() => { void finish(); }} source={source} closeSource={() => setSource(undefined)}
+    openOriginal={source ? () => openOriginal(source.record) : undefined}
     jump={(id, turnId) => {
       const entry = getRecords().find(item => item.id === id);
       if (entry) setSource({record: entry, turnId});

@@ -1,4 +1,4 @@
-import { assertDate, assertId, assertTurn, isCategoryPath, speakerLabel, timeLabel, type RecordData, type Turn } from './model.ts';
+import { assertDate, assertId, assertTurn, isCategoryPath, isOriginalFilename, speakerLabel, timeLabel, type RecordData, type Turn } from './model.ts';
 
 const recordTag = '<!-- sitenote-record ';
 const turnTag = '<!-- sitenote-turn ';
@@ -45,6 +45,7 @@ function readRecordHeader(line: string): Omit<RecordData, 'turns'> {
   if (!object(value) || typeof value.id !== 'string' || (value.kind !== 'meeting' && value.kind !== 'personal') ||
     typeof value.title !== 'string' || typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string' ||
     (value.project !== undefined && typeof value.project !== 'string') || typeof value.allowInMeetings !== 'boolean' ||
+    (value.originalFilename !== undefined && (value.kind !== 'meeting' || !isOriginalFilename(value.originalFilename))) ||
     (value.category !== undefined && !isCategoryPath(value.category)) ||
     !object(value.speakers) || Object.values(value.speakers).some(name => typeof name !== 'string')) {
     throw Error('기록 메타데이터 형식이 올바르지 않습니다.');
@@ -52,9 +53,9 @@ function readRecordHeader(line: string): Omit<RecordData, 'turns'> {
   assertId(value.id);
   assertDate(value.createdAt);
   assertDate(value.updatedAt);
-  const { id, kind, title, createdAt, updatedAt, project, category, allowInMeetings, speakers } = value;
+  const { id, kind, title, createdAt, updatedAt, project, category, originalFilename, allowInMeetings, speakers } = value;
   return { id, kind, title, createdAt, updatedAt, ...(project === undefined ? {} : { project }),
-    ...(category ? {category} : {}), allowInMeetings, speakers: speakers as RecordData['speakers'] };
+    ...(category ? {category} : {}), ...(originalFilename ? {originalFilename} : {}), allowInMeetings, speakers: speakers as RecordData['speakers'] };
 }
 
 export function parseTranscript(markdown: string): RecordData {

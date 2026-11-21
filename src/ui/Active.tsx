@@ -14,10 +14,10 @@ const labels: Record<Snapshot['phase'], string> = {
   finished: '종료됨', disconnected: '연결 끊김', error: '오류',
 };
 
-export function Active({session, snapshot, mode, record, evidence, jump, finish, rename, warning, source, closeSource}: {
+export function Active({session, snapshot, mode, record, evidence, jump, finish, rename, warning, source, closeSource, openOriginal}: {
   session: Session; snapshot: Snapshot; mode: Mode; record: RecordData; evidence: Evidence[]; jump: Jump;
   finish: () => void; rename: (id: string) => void; warning?: string;
-  source?: {record: RecordData; turnId?: string}; closeSource: () => void;
+  source?: {record: RecordData; turnId?: string}; closeSource: () => void; openOriginal?: () => void;
 }) {
   const list = useRef<ComponentRef<typeof ScrollView>>(null);
   const stick = useRef(true);
@@ -82,7 +82,7 @@ export function Active({session, snapshot, mode, record, evidence, jump, finish,
       <View style={[styles.safe, {paddingTop: 32}]}><ScrollView contentContainerStyle={styles.content}>
         <View style={styles.row}><Button label="근거 닫기" onPress={closeSource}/></View>
         {source && <><Text style={styles.heading}>{source.record.title}</Text>{selected
-          ? <TurnCard turn={selected} record={source.record} highlight/> : <Text style={styles.body}>{source.record.summary || '저장된 구간을 찾을 수 없습니다.'}</Text>}</>}
+          ? <TurnCard turn={selected} record={source.record} highlight openOriginal={openOriginal}/> : <Text style={styles.body}>{source.record.summary || '저장된 구간을 찾을 수 없습니다.'}</Text>}</>}
       </ScrollView></View>
     </Modal>
   </>;

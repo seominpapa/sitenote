@@ -16,12 +16,15 @@ export function clock(ms: number) {
   return String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
 }
 
-export function Home({records, connected, start, open, goSearch, goSettings, status}: {
+export function Home({records, connected, start, open, goSearch, goSettings, status, addDocument, working}: {
   records: RecordData[]; connected: boolean; start: (kind: RecordData['kind'], project?: string) => void;
   open: Jump; goSearch: () => void; goSettings: () => void; status?: string;
+  addDocument?: (project: string) => Promise<boolean>; working: boolean;
 }) {
   const [choosing, setChoosing] = useState(false);
   const [project, setProject] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [documentProject, setDocumentProject] = useState('');
   const projects = [...new Set(records.map(record => record.project).filter((name): name is string => !!name))];
   return <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, {paddingTop: 16}]}>
     <View style={styles.between}>
@@ -52,17 +55,30 @@ export function Home({records, connected, start, open, goSearch, goSettings, sta
     </View>}
     {status && <Notice text={status} />}
     <View style={[styles.between, {marginTop: 3}]}>
-      <Text accessibilityRole="header" style={styles.heading}>최근 기록</Text>
+      <Text accessibilityRole="header" style={styles.heading}>최근 노트</Text>
       <Text style={styles.small}>{records.length}개 · 이 기기</Text>
     </View>
+    {addDocument && (!adding ? <Button label="노트 추가" variant="primary" disabled={working} onPress={() => setAdding(true)}/> : <View style={styles.card}>
+      <Text style={styles.heading}>회의 문서 가져오기</Text>
+      <Text style={styles.small}>MD, TXT, DOCX, HWP, HWPX를 기기에서 변환합니다. AI가 참고할 때 관련 문서의 일부가 답변 요청에 포함될 수 있습니다.</Text>
+      <Field label="프로젝트 (선택)" value={documentProject} onChangeText={setDocumentProject} maxLength={120}/>
+      <View style={styles.row}>
+        <Button label={working ? '가져오는 중…' : '파일 선택'} variant="primary" disabled={working} onPress={() => {
+          void addDocument(documentProject.trim()).then(added => {
+            if (added) { setAdding(false); setDocumentProject(''); }
+          });
+        }}/>
+        <Button label="취소" disabled={working} onPress={() => setAdding(false)}/>
+      </View>
+    </View>)}
     {records.length === 0 && <View style={styles.card}>
       <Text style={styles.body}>아직 기록이 없어요.</Text><Text style={styles.small}>첫 대화가 끝나면 원문과 요약이 여기에 모입니다.</Text>
     </View>}
     {records.map(record => <Pressable key={record.id} accessibilityRole="button" onPress={() => open(record.id)}
       style={({pressed}) => [styles.card, {opacity: pressed ? 0.65 : 1}]}>
-      <Text style={styles.label}>{record.kind === 'meeting' ? '회의' : '개인 대화'}{record.project ? ' · ' + record.project : ''}</Text>
+      <Text style={styles.label}>{record.originalFilename ? '가져온 문서' : record.kind === 'meeting' ? '회의' : '개인 대화'}{record.project ? ' · ' + record.project : ''}</Text>
       <Text style={styles.heading}>{record.title}</Text>
-      <Text style={styles.small}>{dateLabel(record.createdAt)} · {record.turns.length}개 발언 · {record.summary ? '요약 있음' : '원문'}</Text>
+      <Text style={styles.small}>{dateLabel(record.createdAt)} · {record.originalFilename ?? `${record.turns.length}개 발언`} · {record.summary ? '요약 있음' : '원문'}</Text>
     </Pressable>)}
   </ScrollView>;
 }
@@ -99,7 +115,7 @@ export function EvidenceList({items, jump, title = '답변에 제공한 원문'}
     {items.map(item => <Pressable key={item.reference} accessibilityRole="link"
       onPress={() => jump(item.recordId, item.turnId)} style={{paddingVertical: 10, minHeight: 48}}>
       <Text style={[styles.body, {color: color.primary, fontWeight: '800'}]}>{item.title} ↗</Text>
-      <Text style={styles.small}>{dateLabel(item.createdAt)}{item.timeMs !== undefined ? ' · ' + clock(item.timeMs) : ' · 요약'}</Text>
+      <Text style={styles.small}>{dateLabel(item.createdAt)}{item.originalFilename ? ' · 가져온 문서' : item.timeMs !== undefined ? ' · ' + clock(item.timeMs) : ' · 요약'}</Text>
       <Text numberOfLines={2} style={styles.small}>{item.text}</Text>
     </Pressable>)}
   </View>;
@@ -112,23 +128,25 @@ export function AnswerSources({items, quoted, jump}: {items: Evidence[]; quoted:
   </>;
 }
 
-export function TurnCard({turn, record, highlight = false, partial = false, onRename, sources = [], jump}: {
+export function TurnCard({turn, record, highlight = false, partial = false, onRename, sources = [], jump, openOriginal}: {
   turn: Turn; record: RecordData; highlight?: boolean; partial?: boolean;
-  onRename?: (id: string) => void; sources?: Evidence[]; jump?: Jump;
+  onRename?: (id: string) => void; sources?: Evidence[]; jump?: Jump; openOriginal?: () => void;
 }) {
   const speaker = speakerLabel(turn, record);
+  const document = record.originalFilename && turn.id.startsWith('import-');
   const attached = sources.filter(source => turn.sourceRefs?.includes(source.reference));
   const quoted = new Set(currentQuotedRefs(turn,attached));
   return <View style={[styles.card, turn.role === 'ai' && {backgroundColor: '#EEF5DF'},
       highlight && {borderColor: color.primary, borderWidth: 2}, partial && {opacity: 0.7}]}>
     <View style={[styles.between, {flexWrap: 'wrap'}]}>
-      <Text style={styles.label}>{speaker} · {clock(turn.timeMs)}{partial ? ' · 전사 중' : ''}{turn.interrupted ? ' · 중단됨' : ''}</Text>
+      <Text style={styles.label}>{speaker}{document ? '' : ' · ' + clock(turn.timeMs)}{partial ? ' · 전사 중' : ''}{turn.interrupted ? ' · 중단됨' : ''}</Text>
       {onRename && turn.speakerId && <Button label="화자 이름" onPress={() => onRename(turn.speakerId!)}/>}
     </View>
     {turn.role === 'ai' ? <>
       <RichText value={turn.text} refs={jump ? evidenceRefs(attached.filter(item => quoted.has(item.reference)), jump) : new Map()}/>
       {jump && attached.length > 0 && <AnswerSources items={attached} quoted={quoted} jump={jump}/>}
     </> : <Text selectable style={styles.body}>{turn.text}</Text>}
+    {document && openOriginal && <Button label="원본 파일 열기" onPress={openOriginal}/>}
   </View>;
 }
 
@@ -158,12 +176,13 @@ function SpeakerNames({record, working, rename}: {record: RecordData; working: b
 
 const sections = {personal: '개인 대화', meeting: '회의 원문', 'meeting-ai': '회의 중 AI 질의응답', followup: '회의 후 보완 대화'};
 
-export function Details({record, focus, back, update, remove, exportOne, audioFiles, exportAudio, rename, summary, followup, supplement, refs, sources, jump, working, status}: {
+export function Details({record, focus, back, update, remove, exportOne, audioFiles, exportAudio, rename, summary, followup, supplement, refs, sources, jump, working, status, openOriginal}: {
   record: RecordData; focus?: string; back: () => void;
   update: (fields: Pick<RecordData, 'title'|'project'|'allowInMeetings'>) => Promise<void>;
   remove: () => void; exportOne: () => void; rename: (id: string) => void; summary: () => void;
   followup: () => void; supplement: SupplementActions; refs: Map<string, () => void>; working: boolean; status?: string;
   sources: Evidence[]; jump: Jump;
+  openOriginal: () => void;
   audioFiles: () => {name: string; uri: string}[]; exportAudio: (uri: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -181,17 +200,18 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
     } else setTab('summary');
   }, [record.id, focus]);
   const visible = tab === 'followup' ? record.turns.filter(turn => turn.section === 'followup') : record.turns;
+  const meeting = record.kind === 'meeting' && !record.originalFilename;
   return <>
-    <Header title={record.title} sub={record.kind === 'meeting' ? '회의 기록' : '개인 기록'} onBack={back}/>
+    <Header title={record.title} sub={record.originalFilename || (meeting ? '회의 기록' : '개인 기록')} onBack={back}/>
     <ScrollView ref={scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
       automaticallyAdjustKeyboardInsets>
       <Text style={styles.small}>{dateLabel(record.createdAt)}{record.project ? ' · ' + record.project : ''}</Text>
       <View style={styles.row}>
         <Button label="요약" variant={tab === 'summary' ? 'primary' : 'outline'} onPress={() => setTab('summary')} disabled={working}/>
         <Button label="원문" variant={tab === 'transcript' ? 'primary' : 'outline'} onPress={() => setTab('transcript')} disabled={working}/>
-        {record.kind === 'meeting' && <Button label="보완 대화" variant={tab === 'followup' ? 'primary' : 'outline'} onPress={() => setTab('followup')} disabled={working}/>}
+        {meeting && <Button label="보완 대화" variant={tab === 'followup' ? 'primary' : 'outline'} onPress={() => setTab('followup')} disabled={working}/>}
       </View>
-      {record.kind === 'meeting' && <View style={tab === 'followup' ? undefined : {display:'none'}}>
+      {meeting && <View style={tab === 'followup' ? undefined : {display:'none'}}>
         <Supplement record={record} actions={supplement} working={working}/>
       </View>}
       {status && <Notice text={status}/>}
@@ -203,9 +223,10 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
         <View style={styles.row}>
           <Button label={working ? '요약 생성 중…' : record.summary ? '요약 다시 만들기' : '요약 만들기'}
             onPress={summary} disabled={working || !record.turns.length}/>
-          {record.kind === 'meeting' && <Button label="음성으로 보완하기" variant="primary" onPress={followup}
+          {meeting && <Button label="음성으로 보완하기" variant="primary" onPress={followup}
             disabled={working || !record.summary}/>}
-          {record.kind === 'meeting' && <Button label="글로 보완하기" onPress={() => setTab('followup')} disabled={working}/>}
+          {meeting && <Button label="글로 보완하기" onPress={() => setTab('followup')} disabled={working}/>}
+          {record.originalFilename && <Button label="원본 파일 열기" onPress={openOriginal} disabled={working}/>}
         </View>
       </View> : visible.length ? visible.map((turn, index) =>
         <View key={turn.id} onLayout={event => {
@@ -213,8 +234,9 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
           positions.current[turn.id] = y;
           if (focus === turn.id) scroll.current?.scrollTo({y, animated: false});
         }} style={{gap: 6}}>
-          {turn.section !== visible[index - 1]?.section && <Text accessibilityRole="header" style={styles.heading}>{sections[turn.section]}</Text>}
-          <TurnCard turn={turn} record={record} highlight={focus === turn.id} sources={sources} jump={jump}/>
+          {turn.section !== visible[index - 1]?.section && <Text accessibilityRole="header" style={styles.heading}>{record.originalFilename ? '문서 본문' : sections[turn.section]}</Text>}
+          <TurnCard turn={turn} record={record} highlight={focus === turn.id} sources={sources} jump={jump}
+            openOriginal={focus === turn.id || (!focus && index === 0) ? openOriginal : undefined}/>
         </View>) : <Notice text="이 구간에는 저장된 발언이 없습니다."/>}
       {editing && <View style={styles.card}>
         <Field label="기록 제목" value={title} onChangeText={setTitle} maxLength={120}/>
@@ -231,7 +253,7 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
       <View style={styles.row}>
         <Button label={editing ? '수정 닫기' : '기록 수정'} onPress={() => setEditing(!editing)} disabled={working}/>
         <Button label="파일 내보내기" onPress={exportOne} disabled={working}/>
-        <Button label={showAudio ? '음성 사본 접기' : '음성 사본 보기'} onPress={() => setShowAudio(!showAudio)} disabled={working}/>
+        {!record.originalFilename && <Button label={showAudio ? '음성 사본 접기' : '음성 사본 보기'} onPress={() => setShowAudio(!showAudio)} disabled={working}/>}
         <Button label="기록 삭제" variant="danger" onPress={remove} disabled={working}/>
       </View>
       {showAudio && <AudioList files={audioFiles} exportAudio={exportAudio}/>}

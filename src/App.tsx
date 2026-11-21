@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, BackHandler, Modal, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, BackHandler, Modal, Platform, Text, View } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import { answer, generateFollowup, health, judgeFollowup, loadSettings, saveSettings, summarize, type Health, type Settings } from './api';
 import { createRecord, renameSpeaker, searchContext, type RecordData } from './records/core';
-import { recordStore } from './records/expo';
+import { chooseAndroidNoteFolder, loadAndroidNoteFolder, recordStore, type AndroidNoteFolder } from './records/expo';
 import { analysisContext, resolveOriginalSources, searchOriginalAnswers } from './recordContext';
 import { citationParts, validateConnection } from './workflow';
 import { appendTypedFollowup, typedJudgeRequest, typedQuestionRequest } from './typedFollowup';
@@ -33,6 +33,8 @@ export default function App() {
   const [working, setWorking] = useState(false);
   const [speaker, setSpeaker] = useState<{id: string; name: string}>();
   const [renameBusy, setRenameBusy] = useState(false);
+  const [noteFolder, setNoteFolder] = useState<AndroidNoteFolder>();
+  const [folderIssue, setFolderIssue] = useState<string>();
   const list = useRef<RecordData[]>([]);
   const busy = useRef(false);
   const connection = settings.url && settings.token ? {url: settings.url, token: settings.token} : undefined;
@@ -40,9 +42,16 @@ export default function App() {
 
   useEffect(() => {
     let issue = false;
-    void Promise.allSettled([loadSettings(), recordStore.list(() => { issue = true; })]).then(([storedSettings, storedRecords]) => {
+    void Promise.allSettled([
+      loadSettings(), recordStore.list(() => { issue = true; }),
+      loadAndroidNoteFolder(kind => setFolderIssue(kind === 'delete'
+        ? '앱에서 노트를 삭제했지만 지정한 폴더의 Markdown 파일은 삭제하지 못했습니다.'
+        : '노트는 앱에 저장됐지만 지정한 폴더에 복사하지 못했습니다. 설정에서 폴더를 다시 선택해 주세요.')),
+    ]).then(([storedSettings, storedRecords, storedFolder]) => {
       if (storedSettings.status === 'fulfilled') setSettings(storedSettings.value);
       if (storedRecords.status === 'fulfilled') { list.current = storedRecords.value; setRecords(storedRecords.value); }
+      if (storedFolder.status === 'fulfilled') setNoteFolder(storedFolder.value);
+      else setFolderIssue('노트 저장 폴더 설정을 열지 못했습니다. 폴더를 다시 선택해 주세요.');
       if (storedRecords.status === 'rejected' || storedSettings.status === 'rejected') {
         setStatus('이 기기의 저장소를 일부 읽지 못했습니다. 앱을 다시 열어 주세요.');
       } else if (issue) {
@@ -229,7 +238,8 @@ export default function App() {
   }
 
   function confirmRemoval(record: RecordData) {
-    Alert.alert('기록을 삭제할까요?', '원문, 요약, 저장된 음성 사본이 이 기기에서 삭제됩니다.', [
+    Alert.alert('기록을 삭제할까요?', record.originalFilename ? '이 노트를 삭제합니다. 가져온 원본 파일은 보관됩니다.'
+      : '원문, 요약, 저장된 음성 사본이 이 기기에서 삭제됩니다.', [
       {text: '취소', style: 'cancel'},
       {text: '삭제', style: 'destructive', onPress: () => { void action(async () => {
         await recordStore.delete(record.id);
@@ -244,6 +254,27 @@ export default function App() {
   const exportRecord = (record: RecordData) =>
     { void action(() => recordStore.export(record), '파일을 내보내지 못했습니다.'); };
 
+  function chooseFolder() {
+    void action(async () => {
+      const selected = await chooseAndroidNoteFolder();
+      if (selected) { setNoteFolder(selected); setFolderIssue(undefined); setStatus('노트와 원본을 새 폴더에 복사했습니다.'); }
+    }, '노트 저장 폴더를 변경하지 못했습니다.');
+  }
+
+  async function addDocument(project: string) {
+    let added = false;
+    await action(async () => {
+      setStatus(undefined);
+      const document = await recordStore.importDocument(createId(), project);
+      if (document) { publish(document); setResult(undefined); setStatus('회의 문서를 노트에 추가했습니다.'); added = true; }
+    }, '회의 문서를 추가하지 못했습니다.');
+    return added;
+  }
+
+  function openOriginal(record: RecordData) {
+    void recordStore.openOriginal(record).catch(error => Alert.alert('원본 파일 열기', message(error, '이 기기에서 원본을 열 수 없습니다.')));
+  }
+
   const detailReferences = (record: RecordData) => {
     const map = new Map<string, () => void>();
     for (const turn of record.turns) map.set('[record:' + record.id + '#' + turn.id + ']', () => jump(record.id, turn.id));
@@ -256,12 +287,14 @@ export default function App() {
   const voice = route.page === 'voice' && current && connection ?
     <Voice key={route.id + route.mode} mode={route.mode} connection={connection} keepAudio={!!settings.keepAudio} voice={settings.voice}
       record={current} rename={editSpeaker} onDone={finish}
+      openOriginal={openOriginal}
       getRecord={() => list.current.find(item => item.id === current.id) || current} getRecords={() => list.current}
       save={async next => { publish(next); await recordStore.save(next); }}/> : null;
 
   return <Page>
     {booting ? <View style={[styles.content, {paddingTop: 40}]}><ActivityIndicator /><Text style={styles.body}>기록을 여는 중…</Text></View>
       : voice || (route.page === 'settings' ? <SettingsPage settings={settings} back={back} connect={connect} changeVoice={changeVoice}
+        noteFolder={Platform.OS === 'android' ? {label:noteFolder?.label, choose:chooseFolder} : undefined}
         setAudioPreference={keepAudio => { void action(async () => {
           const next = {...settings, keepAudio};
           await saveSettings(next);
@@ -269,11 +302,12 @@ export default function App() {
           setStatus('음성 사본 설정을 저장했습니다.');
         }, '음성 사본 설정을 저장하지 못했습니다.'); }}
         exportAll={() => { void action(() => recordStore.exportAll(), '파일을 내보내지 못했습니다.'); }}
-        status={status} result={connectionHealth} working={working}/>
+        status={[status,folderIssue].filter(Boolean).join(' ')} result={connectionHealth} working={working}/>
       : route.page === 'search' ? <SearchPage back={back} jump={jump} run={runSearch} result={result} working={working} status={status}/>
       : route.page === 'detail' && current ? <Details key={current.id} record={current} focus={route.turnId}
         back={() => { if (!busy.current) back(); }} refs={detailReferences(current)} rename={editSpeaker}
-        working={working} status={status} sources={answerSources(current)} jump={jump} update={async fields => {
+        working={working} status={[status,folderIssue].filter(Boolean).join(' ')} sources={answerSources(current)} jump={jump}
+        openOriginal={() => openOriginal(current)} update={async fields => {
           const value = {...current, ...fields, updatedAt: new Date().toISOString()};
           try { await recordStore.save(value); publish(value); setResult(undefined); setStatus('기록을 수정했습니다.'); }
           catch (error) { setStatus(message(error, '기록을 수정하지 못했습니다.')); throw error; }
@@ -283,7 +317,8 @@ export default function App() {
         summary={() => { void makeSummary(current, '원문이 기기에 보관되어 있습니다.'); }}
         supplement={supplement(current)}
         followup={() => { if (withConnection()) navigate({page: 'voice', id: current.id, mode: 'followup'}); }}/>
-      : <Home records={records} connected={!!connection} start={start} open={jump} status={status}
+      : <Home records={records} connected={!!connection} start={start} open={jump} status={[status,folderIssue].filter(Boolean).join(' ')}
+          addDocument={Platform.OS === 'android' ? addDocument : undefined} working={working}
           goSearch={() => navigate({page: 'search'})} goSettings={() => navigate({page: 'settings'})}/>)}
     <Modal visible={!!speaker} animationType="slide" transparent onRequestClose={() => { if (!renameBusy) setSpeaker(undefined); }}>
       <View style={{flex: 1, backgroundColor: '#10282078', justifyContent: 'center', paddingHorizontal: 20}}>

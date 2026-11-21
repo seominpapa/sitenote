@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { access, copyFile, open, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Platform, Arch, build } from 'electron-builder';
+import { buildDocumentConverter } from './build-document-converter.mjs';
 
 const projectDir = import.meta.dirname;
 const dist = join(projectDir, '..', 'dist');
@@ -42,6 +43,7 @@ await Promise.all([
   join(runtime, 'dist', 'web', 'index.html'),
 ].map(assertReadable));
 
+await buildDocumentConverter();
 const paths = await build({
   projectDir,
   config: join(projectDir, 'electron-builder.win.yml'),

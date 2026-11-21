@@ -28,3 +28,4 @@ build/
 *.dmg
 *.exe
 *.blockmap
+/desktop/document-converter.bundle.cjs

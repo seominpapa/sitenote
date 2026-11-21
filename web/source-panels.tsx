@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { timeLabel, type Evidence } from '../src/records/core.ts';
+import { noteFiles } from './note-files.ts';
 import { date, Icon, type Jump } from './ui.tsx';
 
 type PastSource = Evidence & { turnId: string };
@@ -17,8 +18,22 @@ export function pastSources(recordId: string, evidence: Evidence[]) {
 function SourceMetadata({ item }: { item: PastSource }) {
   return <span className="source-meta">
     <time dateTime={item.createdAt}>{date.format(new Date(item.createdAt))}</time>
+    {item.originalFilename && <span> · 가져온 문서</span>}
     {item.timeMs !== undefined && <span> · 발언 위치 {timeLabel(item.timeMs)}</span>}
   </span>;
+}
+
+export function OriginalFile({id}: {id: string}) {
+  const [error, setError] = useState(false);
+  const desktop = noteFiles();
+  if (!desktop) return null;
+  return <div className="original-file">
+    <button type="button" className="button quiet" onClick={() => {
+      setError(false);
+      void desktop.revealOriginal(id).then(found => setError(!found), () => setError(true));
+    }}>원본 파일 위치 열기</button>
+    {error && <small role="alert">원본 파일을 찾지 못했습니다. 노트 저장 폴더를 확인해 주세요.</small>}
+  </div>;
 }
 
 function SourceLabel({ item }: { item: PastSource }) {
@@ -70,6 +85,7 @@ export function VoiceSources({ sources, quoted }: { sources: PastSource[]; quote
         <h3>{selected.title}</h3>
         <SourceMetadata item={selected} />
         <p className="source-reader-text">{selected.text}</p>
+        {selected.originalFilename && <OriginalFile key={selected.recordId} id={selected.recordId} />}
       </article>}
     </dialog>
   </>;

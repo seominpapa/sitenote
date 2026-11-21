@@ -6,6 +6,8 @@ const { pathToFileURL } = require('node:url');
 const { origin, port, ownedPage, configureSession, secureContents, bindLocalServer, providerKeysFile } = require('./runtime.cjs');
 const { createUpdater } = require('./updater.cjs');
 const { registerUpdateIpc } = require('./update-ipc.cjs');
+const { createNoteFiles } = require('./note-files.cjs');
+const { registerNoteIpc } = require('./note-ipc.cjs');
 
 const runtimeRoot = app.isPackaged ? join(process.resourcesPath, 'runtime') : join(__dirname, '..');
 let server;
@@ -75,6 +77,11 @@ async function start() {
   await bindLocalServer(server);
   server.on('error', stopWithError);
   partition = session.fromPartition('persist:sitenote-desktop');
+  const userData = app.getPath('userData');
+  registerNoteIpc(ipcMain, () => window,
+    createNoteFiles({profile:userData, defaultFolder:app.getPath('documents')}),
+    (parent, options) => dialog.showOpenDialog(parent, options),
+    path => shell.showItemInFolder(path));
   const version = app.getVersion();
   registerUpdateIpc(ipcMain, () => window?.webContents, version,
     createUpdater({currentVersion:version, userData:app.getPath('userData'), platform:process.platform, arch:process.arch}),

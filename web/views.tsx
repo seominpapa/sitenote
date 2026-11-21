@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'rea
 import { searchRecords, speakerGroups, speakerLabel, timeLabel, type Evidence, type RecordData, type Turn } from '../src/records/core.ts';
 import { summaryWithSpeakerNames } from '../src/records/summary-speakers.ts';
 import { date, Icon, type Jump } from './ui.tsx';
-import { pastSources, SavedSources, SourceLink, VoiceSources } from './source-panels.tsx';
+import { OriginalFile, pastSources, SavedSources, SourceLink, VoiceSources } from './source-panels.tsx';
 import { currentQuotedRefs } from '../src/recordContext.ts';
 import type { createVoiceSession, Mode, Snapshot } from '../src/session/session.ts';
 import { citationParts } from '../src/workflow.ts';
@@ -71,7 +71,7 @@ function RecordRows({ records, busy, open, remove, selected, toggle }: RowAction
     <button className="record-row" data-testid="record-item" disabled={busy} onClick={() => open(record.id)}>
       <span className="empty-icon"><Icon name={record.kind === 'meeting' ? 'people' : 'mic'} /></span>
       <span className="record-name"><strong>{record.title}</strong><small>{describe(record)}</small></span>
-      <span className="badge">{record.kind === 'meeting' ? '회의' : '개인'}</span><Icon name="arrow" />
+      <span className="badge">{record.originalFilename ? '문서' : record.kind === 'meeting' ? '회의' : '개인'}</span><Icon name="arrow" />
     </button>
     <button className="button danger" aria-label={`${record.title} 삭제`} data-testid="record-delete" disabled={busy} onClick={() => remove(record.id)}>삭제</button>
     <label className="record-select"><input type="checkbox" aria-label={`${record.title} 선택`} checked={selected.has(record.id)} disabled={busy}
@@ -171,13 +171,15 @@ function NewFolderForm({ create, close }: { create: (path: string) => Promise<vo
 }
 
 export function RecordList({ records, loading, busy, open, remove, removeMany, exportAll, view, selectView, aiAvailable, classify,
-  keySettings, notice, folders, createFolder, moveToFolder, undoAvailable, undo }: RecordActions & {
+  keySettings, notice, folders, createFolder, moveToFolder, undoAvailable, undo, importDocument }: RecordActions & {
   records: RecordData[]; loading: boolean; removeMany(ids: readonly string[]): void; exportAll: () => void; view: LibraryView; selectView: (mode: LibraryView) => void;
   aiAvailable: boolean; classify: () => void; keySettings: () => void; notice?: string;
   folders: string[][]; createFolder: (path: string) => Promise<void>; moveToFolder: MoveToFolder;
   undoAvailable: boolean; undo: () => void;
+  importDocument?: (project: string, close: () => void) => void;
 }) {
   const [addingFolder, setAddingFolder] = useState(false);
+  const [addingDocument, setAddingDocument] = useState(false);
   const [page, setPage] = useState(0);
   const { selected, toggle, selectAll, clear } = useNoteSelection(records);
   const actions = { busy, open, remove, selected, toggle };
@@ -192,8 +194,20 @@ export function RecordList({ records, loading, busy, open, remove, removeMany, e
   return <section className="library">
     <div className="section-heading">
       <h2>최근 노트 <small>{records.length}</small></h2>
-      <button className="button quiet" disabled={!records.length || busy} onClick={exportAll}><Icon name="download" /> 전체 내보내기 (ZIP)</button>
+      <div className="actions">
+        {importDocument && <button className="button primary" disabled={busy || loading || addingDocument} onClick={() => setAddingDocument(true)}>노트 추가</button>}
+        <button className="button quiet" disabled={!records.length || busy} onClick={exportAll}><Icon name="download" /> 전체 내보내기 (ZIP)</button>
+      </div>
     </div>
+    {addingDocument && importDocument && <form className="inline document-import" onSubmit={event => {
+      event.preventDefault();
+      importDocument(String(new FormData(event.currentTarget).get('project') ?? '').trim(), () => { setAddingDocument(false); setPage(0); });
+    }}>
+      <label>프로젝트 (선택)<input name="project" maxLength={120} /></label>
+      <button className="button primary" disabled={busy} type="submit">{busy ? '가져오는 중…' : '파일 선택'}</button>
+      <button className="button quiet" disabled={busy} type="button" onClick={() => setAddingDocument(false)}>취소</button>
+      <p className="muted">MD, TXT, DOCX, HWP, HWPX를 기기에서 변환합니다. AI가 노트를 참고할 때 관련 문서의 일부가 답변 요청에 포함될 수 있습니다.</p>
+    </form>}
     <div className="library-toolbar">
       <div className="library-tabs" role="group" aria-label="기록 보기">{libraryViews.map(([mode, label]) =>
         <button key={mode} className="button quiet" aria-pressed={view === mode} disabled={busy} onClick={() => {
@@ -250,7 +264,9 @@ function transcriptSpeaker(record: RecordData, turn: Turn) {
 function Transcript({ turns, record, partials = false, afterTurn }: { turns: Turn[]; record: RecordData; partials?: boolean; afterTurn?: (turn: Turn) => ReactNode }) {
   return <div className={partials ? 'transcript partial' : 'transcript'}>
     {turns.map(turn => <article id={partials ? undefined : turn.id} tabIndex={partials ? undefined : -1} data-testid={partials ? undefined : 'transcript-turn'} key={turn.id} className={turn.role === 'ai' ? 'turn ai' : 'turn'}>
-      <div className="turn-by"><span>{transcriptSpeaker(record, turn)}</span><small>{sectionNames[turn.section]} · {timeLabel(turn.timeMs)}{turn.interrupted ? ' · 중단' : ''}</small></div>
+      <div className="turn-by"><span>{transcriptSpeaker(record, turn)}</span>
+        {!(record.originalFilename && turn.id.startsWith('import-')) && <small>{sectionNames[turn.section]} · {timeLabel(turn.timeMs)}{turn.interrupted ? ' · 중단' : ''}</small>}
+      </div>
       <p>{turn.text}</p>
       {afterTurn?.(turn)}
     </article>)}
@@ -639,11 +655,12 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
       {record.category && <p className="muted">분류: {record.category.join(' / ')}</p>}
       <div className="actions">
         <button className="button primary" disabled={busy || !record.turns.length} onClick={summarize}>{busy ? '처리 중…' : record.summary ? '요약 다시 만들기' : '요약 만들기'}</button>
-        {!offerFollowup && !typedFollowup && record.kind === 'meeting' && !!original.length && <>
+        {!offerFollowup && !typedFollowup && record.kind === 'meeting' && !record.originalFilename && !!original.length && <>
           <button className="button quiet" disabled={busy} onClick={followup}>보충 질문하기</button>
           <button className="button quiet" disabled={busy} onClick={openTypedFollowup}>글로 보충하기</button>
         </>}
         <button className="button quiet" onClick={() => exportRecord(record)}><Icon name="download" /> Markdown 내보내기</button>
+        {record.originalFilename && !part && <OriginalFile id={record.id} />}
       </div>
     </div>
     {offerFollowup && <FollowupInvitation issue={followupIssue} prepared={consentAudio} accept={followup} typeAnswer={openTypedFollowup}
@@ -686,8 +703,9 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
       </form>
     </details>
     <SpeakerNames record={record} busy={busy} rename={rename} />
-    <h2>원문 · {original.length}개 발언</h2>
-    {original.length ? <Transcript turns={original} record={record} afterTurn={answerSources} /> : <div className="empty">아직 전사된 발언이 없습니다.</div>}
+    <h2>{record.originalFilename ? `문서 본문 · ${record.originalFilename}` : `원문 · ${original.length}개 발언`}</h2>
+    {original.length ? <Transcript turns={original} record={record} afterTurn={turn => record.originalFilename && turn.id === part
+      ? <OriginalFile id={record.id} /> : answerSources(turn)} /> : <div className="empty">아직 전사된 발언이 없습니다.</div>}
     {!!supplemental.length && <><h2>회의 후 보충 질문 · {supplemental.length}개 발언</h2><Transcript turns={supplemental} record={record} afterTurn={answerSources} /></>}
   </section>;
 }

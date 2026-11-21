@@ -1,6 +1,7 @@
 import { copyFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Platform, Arch, build } from 'electron-builder';
+import { buildDocumentConverter } from './build-document-converter.mjs';
 
 const projectDir = import.meta.dirname;
 const dist = join(projectDir, '..', 'dist');
@@ -19,6 +20,7 @@ for (const path of inputs) {
   if (!(await stat(path).catch(() => null))?.isFile()) throw new Error(`Missing Mac package input: ${path}`);
 }
 
+await buildDocumentConverter();
 const built = await build({
   projectDir,
   config: join(projectDir, 'electron-builder.mac.yml'),

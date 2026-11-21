@@ -67,11 +67,12 @@ function VoicePreference({settings, change, disabled}: {settings: Settings; chan
   </View>;
 }
 
-export function SettingsPage({settings, back, connect, changeVoice, setAudioPreference, exportAll, status, result, working}: {
+export function SettingsPage({settings, back, connect, changeVoice, setAudioPreference, exportAll, status, result, working, noteFolder}: {
   settings: Settings; back: () => void; connect: (address: string, token: string, keepAudio: boolean) => void;
   changeVoice: (voice: AiVoice) => void;
   setAudioPreference: (keepAudio: boolean) => void;
   exportAll: () => void; status?: string; result?: Health; working: boolean;
+  noteFolder?: {label?: string; choose: () => void};
 }) {
   const [url, setUrl] = useState(settings.url || '');
   const [token, setToken] = useState(settings.token || '');
@@ -89,6 +90,12 @@ export function SettingsPage({settings, back, connect, changeVoice, setAudioPref
         {result && <Text style={styles.small}>서버 응답 확인 · GPT-Live {result.providers.live ? '키 설정됨' : '키 없음'} · Soniox {result.providers.soniox ? '키 설정됨' : '키 없음'} · 요약/검색 {result.providers.text ? '키 설정됨' : '키 없음'}</Text>}
       </View>
       <VoicePreference settings={settings} change={changeVoice} disabled={working}/>
+      {noteFolder && <View style={styles.card}>
+        <Text accessibilityRole="header" style={styles.heading}>노트 저장 폴더</Text>
+        <Text style={styles.body}>{noteFolder.label ? noteFolder.label + ' / Sitenote' : '앱 내부 저장소'}</Text>
+        <Text style={styles.small}>폴더를 선택하면 원문과 요약, 가져온 원본을 복사합니다. 이전 위치의 파일은 그대로 둡니다.</Text>
+        <View style={styles.row}><Button label="저장 폴더 변경" onPress={noteFolder.choose} disabled={working}/></View>
+      </View>}
       <View style={styles.card}>
         <Text style={styles.heading}>저장 및 내보내기</Text>
         <Text style={styles.small}>확정 전사와 요약은 항상 이 기기에 Markdown으로 저장합니다.</Text>

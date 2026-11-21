@@ -19,6 +19,7 @@ export type RecordData = {
   updatedAt: string;
   project?: string;
   category?: string[];
+  originalFilename?: string;
   allowInMeetings: boolean;
   speakers: Record<string, string>;
   turns: Turn[];
@@ -29,6 +30,8 @@ export type RecordData = {
 export const safeId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 export const sections = ['personal', 'meeting', 'meeting-ai', 'followup'] as const;
 export const roles = ['user', 'ai', 'speaker'] as const;
+export const isOriginalFilename = (value: unknown): value is string => typeof value === 'string' &&
+  value.length <= 255 && /^[^/\\:\p{Cc}]+\.(?:md|markdown|txt|docx|hwp|hwpx)$/iu.test(value);
 const categoryLabel = /^[^/\\\p{Cc}\u2028\u2029]+$/u;
 
 export function parseOriginalSourceRef(value: unknown): {recordId: string; turnId: string} | undefined {
@@ -143,6 +146,7 @@ export function speakerLabel(record: RecordData, turn: Turn): string {
   if (turn.entry === 'typed-question') return turn.role === 'ai' ? 'AI 질문' : '직접 입력한 질문';
   if (turn.entry === 'typed-answer') return '직접 입력한 답변';
   if (turn.role === 'ai') return 'AI';
+  if (record.originalFilename && turn.id.startsWith('import-') && turn.section === 'meeting') return '가져온 문서';
   if (turn.role === 'user') return turn.section === 'personal' ? '나' : '응답자 미확인';
   const id = turn.speakerId;
   if (!id) return '발언자 미확인';

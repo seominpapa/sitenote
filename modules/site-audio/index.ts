@@ -19,6 +19,11 @@ declare class NativeSiteAudio extends NativeModule<EventListeners<Events>> {
   playPreview(wave: ArrayBuffer): Promise<void>;
   stopPreview(): Promise<void>;
   writeTextAtomic(uri: string, text: string): Promise<void>;
+  pickNoteFolder(): Promise<{uri: string; label: string} | null>;
+  pickNoteDocument(): Promise<{filename: string; cachePath: string} | null>;
+  writeNoteFile(folderUri: string, id: string, name: string, localPath: string, archive: boolean): Promise<{uri: string}>;
+  openNoteFile(folderUri: string, id: string, name: string, archive: boolean): Promise<void>;
+  deleteNoteFiles(folderUri: string, id: string): Promise<void>;
 }
 declare class NativeVoiceEvents extends NativeModule<EventListeners<{
   onAudio: NativeInput;
@@ -75,4 +80,11 @@ export default {
   playPreview: (wave: ArrayBuffer) => native.playPreview(wave),
   stopPreview: () => native.stopPreview(),
   writeTextAtomic: (uri: string, text: string) => native.writeTextAtomic(uri, text),
+  pickNoteFolder: () => native.pickNoteFolder(),
+  pickNoteDocument: () => native.pickNoteDocument(),
+  writeNoteFile: (folderUri: string, id: string, name: string, localPath: string, archive = false) =>
+    native.writeNoteFile(folderUri, id, name, localPath, archive),
+  openNoteFile: (folderUri: string, id: string, name: string, archive = false) =>
+    native.openNoteFile(folderUri, id, name, archive),
+  deleteNoteFiles: (folderUri: string, id: string) => native.deleteNoteFiles(folderUri, id),
 };

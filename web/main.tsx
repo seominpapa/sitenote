@@ -2,14 +2,17 @@ import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } fro
 import { createRoot } from 'react-dom/client';
 import { applyTurn, createRecord, isCategoryPath, parseCategoryPath, renameSpeaker, safeId, searchContext, type RecordData } from '../src/records/core.ts';
 import { analysisContext, liveContext, resolveOriginalSources, searchOriginalAnswers, searchPastOriginals } from '../src/recordContext.ts';
+import { importedRecord } from '../src/records/import.ts';
 import { createVoiceSession, type Mode, type Snapshot } from '../src/session/session.ts';
 import { appendTypedFollowup, type TypedPair } from '../src/typedFollowup.ts';
 import { answer, classifyRecords, health, saveKeys, summarize, type Health, type ProviderKeys } from './api.ts';
 import { createWebAudio } from './audio.ts';
 import { DesktopUpdate } from './desktop-update.tsx';
+import { noteFiles, type NoteFolder } from './note-files.ts';
 import { Icon, type Jump } from './ui.tsx';
 import { categoryBatchLimit, Detail, RecordList, Search, Settings, StartCards, type LibraryView, Voice } from './views.tsx';
-import { applyCategories, deleteRecords, exportRecords, loadCategoryUndo, loadFolders, records, sameCategory, saveFolders, undoCategories, watchLibrary, type CategoryUndoEntry } from './store.ts';
+import { applyCategories, chooseNoteFolder, deleteRecords, exportRecords, loadCategoryUndo, loadFolders, noteFileError, records,
+  refreshNoteFiles, sameCategory, saveFolders, saveImportedRecord, undoCategories, watchLibrary, type CategoryUndoEntry } from './store.ts';
 import { prepareVoiceConsent, type ConsentAudio } from './voice-consent.ts';
 import { loadAiVoice, saveAiVoice } from './voice-settings.tsx';
 import './style.css';
@@ -56,6 +59,7 @@ function App() {
   const [libraryView, setLibraryView] = useState<LibraryView>('date');
   const [aiVoice, setAiVoice] = useState(loadAiVoice);
   const [editorVersion, setEditorVersion] = useState(0);
+  const [noteFolder, setNoteFolder] = useState<NoteFolder>();
   const current = useRef<RecordData[]>([]);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState<Health>();
@@ -128,6 +132,19 @@ function App() {
       }
     }).catch(() => setNotice('브라우저 저장소를 읽을 수 없습니다. 저장소 설정을 확인하세요.'))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const desktop = noteFiles();
+    if (!desktop) return;
+    const reportFilesError = () => setNotice('저장 폴더를 갱신하지 못했습니다. 폴더 연결과 쓰기 권한을 확인해 주세요.');
+    const onFileError = (event: Event) => (event as CustomEvent).detail === 'delete'
+      ? setNotice('앱에서 노트를 삭제했지만 저장 폴더의 Markdown 파일은 삭제하지 못했습니다. 폴더가 연결되면 앱을 다시 열어 주세요.')
+      : reportFilesError();
+    window.addEventListener(noteFileError, onFileError);
+    void desktop.status().then(setNoteFolder, reportFilesError);
+    void refreshNoteFiles().catch(reportFilesError);
+    return () => window.removeEventListener(noteFileError, onFileError);
   }, []);
 
   useEffect(() => {
@@ -376,10 +393,11 @@ function App() {
       const selected = current.current.filter(item => requested.has(item.id));
       if (!selected.length) return;
       const multiple = selected.length > 1;
+      const location = noteFiles() ? '이 앱과 현재 저장 폴더' : '이 브라우저';
       const prompt = multiple
-        ? `선택한 기록 ${selected.length}개를 이 브라우저에서 삭제할까요? 삭제하면 되돌릴 수 없습니다.`
-        : `‘${selected[0].title}’ 기록을 이 브라우저에서 삭제할까요?`;
-      if (!window.confirm(prompt)) return;
+        ? `선택한 기록 ${selected.length}개를 ${location}에서 삭제할까요? 삭제하면 되돌릴 수 없습니다.`
+        : `‘${selected[0].title}’ 기록을 ${location}에서 삭제할까요?`;
+      if (!window.confirm(prompt + (selected.some(item => item.originalFilename) ? ' 가져온 원본 파일은 보관됩니다.' : ''))) return;
       const keys = new Set(selected.map(item => item.id));
       for (const id of keys) summaries.current.delete(id);
       try { await deleteRecords([...keys]); }
@@ -387,7 +405,29 @@ function App() {
       current.current = current.current.filter(item => !keys.has(item.id));
       setList(current.current);
       setPage(currentPage => currentPage.name === 'detail' && keys.has(currentPage.id) ? { name: 'home' } : currentPage);
-      setNotice(multiple ? `기록 ${keys.size}개를 삭제했습니다.` : '기록을 삭제했습니다.');
+      if (!noteFiles()) setNotice(multiple ? `기록 ${keys.size}개를 삭제했습니다.` : '기록을 삭제했습니다.');
+    });
+  }
+
+  function selectStorageFolder() {
+    void run(async () => {
+      setNotice('');
+      const selection = await chooseNoteFolder();
+      if (selection) { setNoteFolder(selection); setNotice('노트 저장 폴더를 변경했습니다. 이전 폴더의 파일은 그대로 있습니다.'); }
+    });
+  }
+
+  function importDocument(project: string, close: () => void) {
+    void run(async () => {
+      setNotice('');
+      const draft = await noteFiles()?.pickDocument();
+      if (!draft) return;
+      const record = importedRecord(draft, project);
+      await saveImportedRecord(record);
+      publish(record);
+      setLibraryView('date');
+      close();
+      setNotice('회의 문서를 노트에 추가했습니다.');
     });
   }
 
@@ -497,6 +537,12 @@ function App() {
       <main className="shell content">
         {notice && !showLibraryNotice && <p className="notice" role="status">{notice}</p>}
         <DesktopUpdate settings={page.name === 'settings'} visible={!active && (page.name === 'home' || page.name === 'settings')} busy={busy} />
+        {!active && page.name === 'settings' && noteFiles() && <section className="summary" aria-labelledby="note-folder">
+          <h2 id="note-folder">노트 저장 폴더</h2>
+          {noteFolder && <p className="folder-path">{noteFolder.root}</p>}
+          <p className="muted">원문과 요약은 Markdown으로, 가져온 원본 문서는 별도 폴더에 보관합니다. 위치를 바꾸면 기존 노트와 원본을 복사합니다.</p>
+          <button type="button" className="button quiet" disabled={busy || loading} onClick={selectStorageFolder}>저장 폴더 변경</button>
+        </section>}
         {active && record ? <Voice session={active.session} mode={active.mode} record={record} status={snapshot}
           evidence={snapshot.phase === 'processing' ? [] : evidence} finish={finish} busy={busy} aiAvailable={!!connected?.providers.live} readMeter={active.audio.readMeter}
           withAudio={action => void run(async () => { await active.audio.unlock(); await action(); })} />
@@ -547,6 +593,7 @@ function App() {
             <StartCards startPersonal={(title, project) => start('personal', { title, project })} startMeeting={(title, project) => start('meeting', { title, project })}
               disabled={loading || busy} />
             <RecordList records={list} loading={loading} busy={busy} open={open} remove={id => deleteSelection([id])}
+              importDocument={noteFiles() ? importDocument : undefined}
               removeMany={deleteSelection} exportAll={exportLibrary}
               view={libraryView} selectView={setLibraryView} aiAvailable={!!connected?.providers.text} classify={classifyLibrary}
               keySettings={() => navigate({ name: 'settings' })} notice={showLibraryNotice ? notice : undefined}

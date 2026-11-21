@@ -6,6 +6,10 @@ files:
   - main.cjs
   - runtime.cjs
   - preload.cjs
+  - note-files.cjs
+  - note-ipc.cjs
+  - document-import.cjs
+  - document-converter.bundle.cjs
   - update-ipc.cjs
   - updater.cjs
   - package.json

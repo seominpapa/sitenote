@@ -1,15 +1,92 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 import SiteAudio from '../../modules/site-audio/index.ts';
-import { assertId, safeId, type RecordData } from './model.ts';
+import { assertId, isOriginalFilename, safeId, type RecordData } from './model.ts';
 import { summaryMarkdown, transcriptMarkdown } from './markdown.ts';
 import { buildNotesExport } from './export.ts';
 import { summaryWithSpeakerNames } from './summary-speakers.ts';
 import { createRecordStore, type FileName } from './store.ts';
+import { convertDocument, maxDocumentBytes } from './document-converter.cjs';
+import { importedRecord } from './import.ts';
 
 const directory = () => new Directory(Paths.document, 'records');
 const file = (id: string, name: FileName) => new File(directory(), id, name);
+const sourceFile = (id: string) => new File(directory(), id, 'source.md');
+const archives = () => new Directory(Paths.document, 'note-originals');
+const folderKey = 'sitenote-note-folder';
+export type AndroidNoteFolder = {uri: string; label: string};
+let folder: AndroidNoteFolder | undefined;
+let queue: Promise<unknown> = Promise.resolve();
+let reportFolderIssue: (kind: 'delete' | 'save') => void = () => {};
 const audioName = /^audio-[A-Za-z0-9_-]{1,80}\.wav$/;
+
+function enqueue<T>(task: () => Promise<T>) {
+  const next = queue.then(task);
+  queue = next.catch(() => {});
+  return next;
+}
+
+async function writeCopy(uri: string, id: string, entry: File, archive = false) {
+  if (entry.exists) await SiteAudio.writeNoteFile(uri, id, entry.name, entry.uri, archive);
+}
+
+function copies(id: string, names: FileName[]) {
+  if (!folder) return;
+  return enqueue(async () => {
+    if (folder) for (const name of names) await writeCopy(folder.uri, id, file(id, name));
+  }).catch(() => reportFolderIssue('save'));
+}
+
+async function copyFolder(next: AndroidNoteFolder) {
+  for (const note of await store.list()) {
+    for (const entry of [file(note.id, 'transcript.md'), file(note.id, 'summary.md'), sourceFile(note.id)]) {
+      await writeCopy(next.uri, note.id, entry);
+    }
+  }
+  if (archives().exists) {
+    for (const entry of archives().list()) {
+      if (!(entry instanceof Directory) || !safeId.test(entry.name)) continue;
+      for (const original of entry.list()) {
+        if (original instanceof File && isOriginalFilename(original.name)) await writeCopy(next.uri, entry.name, original, true);
+      }
+    }
+  }
+}
+
+export async function loadAndroidNoteFolder(report: typeof reportFolderIssue) {
+  if (Platform.OS !== 'android') return;
+  reportFolderIssue = report;
+  const raw = await SecureStore.getItemAsync(folderKey);
+  if (!raw) return;
+  const value: unknown = JSON.parse(raw);
+  if (!value || typeof value !== 'object' || !('uri' in value) || !('label' in value) ||
+      typeof value.uri !== 'string' || !value.uri.startsWith('content://') || typeof value.label !== 'string') {
+    throw Error('노트 저장 폴더 설정을 읽지 못했습니다.');
+  }
+  folder = {uri:value.uri, label:value.label};
+  return folder;
+}
+
+export function chooseAndroidNoteFolder() {
+  return enqueue(async () => {
+    const next = await SiteAudio.pickNoteFolder();
+    if (!next) return;
+    await copyFolder(next);
+    await SecureStore.setItemAsync(folderKey, JSON.stringify(next));
+    folder = next;
+    return next;
+  });
+}
+
+function localImportError(error: unknown) {
+  const text = error instanceof Error ? error.message : '';
+  if (/too large/.test(text)) return Error('파일은 20MB, 변환할 본문은 25만 자까지 가져올 수 있습니다.');
+  if (/protected|encrypted/.test(text)) return Error('암호가 걸렸거나 보호된 문서는 가져올 수 없습니다.');
+  if (/image-only|no readable/.test(text)) return Error('읽을 수 있는 본문이 없습니다. 이미지로만 된 문서는 변환할 수 없습니다.');
+  return Error('문서를 읽을 수 없습니다. 지원 형식과 파일 상태를 확인해 주세요.');
+}
 
 const store = createRecordStore({
   async listIds() {
@@ -32,6 +109,69 @@ const store = createRecordStore({
 
 export const recordStore = {
   ...store,
+  async save(record: RecordData) {
+    await store.save(record);
+    await copies(record.id, ['transcript.md']);
+  },
+  async saveSummary(id: string, markdown: string, questions?: readonly string[]) {
+    await store.saveSummary(id, markdown, questions);
+    await copies(id, ['summary.md']);
+  },
+  async delete(id: string) {
+    await store.delete(id);
+    if (!folder) return;
+    await enqueue(async () => {
+      if (folder) await SiteAudio.deleteNoteFiles(folder.uri, id);
+    }).catch(() => reportFolderIssue('delete'));
+  },
+  async importDocument(id: string, project?: string) {
+    assertId(id);
+    const selected = await SiteAudio.pickNoteDocument();
+    if (!selected) return;
+    const input = new File(selected.cachePath);
+    try {
+      if (!isOriginalFilename(selected.filename)) throw Error('MD, TXT, DOCX, HWP 또는 HWPX 파일을 선택해 주세요.');
+      if (!input.exists || (input.size ?? 0) > maxDocumentBytes) throw Error('가져올 파일을 확인할 수 없습니다.');
+      const bytes = await input.bytes();
+      const markdown = await Promise.resolve().then(() => convertDocument(selected.filename, bytes)).catch(error => { throw localImportError(error); });
+      const record = importedRecord({id,filename:selected.filename,markdown}, project);
+      const archive = new Directory(archives(), id);
+      if (archive.exists) throw Error('이미 사용 중인 기록입니다. 문서를 다시 선택해 주세요.');
+      try {
+        archive.create({intermediates:true});
+        await input.copy(new File(archive,selected.filename));
+        new Directory(directory(), id).create({intermediates:true});
+        await SiteAudio.writeTextAtomic(sourceFile(id).uri, markdown);
+        await store.save(record);
+      } catch (error) {
+        if (archive.exists) archive.delete();
+        await store.delete(id);
+        throw error;
+      }
+      await enqueue(async () => {
+        if (!folder) return;
+        await writeCopy(folder.uri,id,new File(archive,selected.filename),true);
+        await writeCopy(folder.uri,id,sourceFile(id));
+        await writeCopy(folder.uri,id,file(id,'transcript.md'));
+      }).catch(() => reportFolderIssue('save'));
+      return record;
+    } finally {
+      try { if (input.exists) input.delete(); } catch { /* Cache cleanup may be retried by the system. */ }
+    }
+  },
+  async openOriginal(record: RecordData) {
+    assertId(record.id);
+    if (!isOriginalFilename(record.originalFilename)) throw Error('연결된 원본 파일이 없습니다.');
+    if (folder) {
+      try {
+        await SiteAudio.openNoteFile(folder.uri, record.id, record.originalFilename, true);
+        return;
+      } catch { /* The private original is available even if a folder is disconnected. */ }
+    }
+    const original = new File(archives(),record.id,record.originalFilename);
+    if (!original.exists || !await Sharing.isAvailableAsync()) throw Error('이 기기에서 원본 문서를 열 수 없습니다.');
+    await Sharing.shareAsync(original.uri,{dialogTitle:'원본 문서 열기'});
+  },
   archiveUri(id: string, name: string): string {
     assertId(id);
     if (!audioName.test(name)) throw Error('녹음 파일 이름이 올바르지 않습니다.');

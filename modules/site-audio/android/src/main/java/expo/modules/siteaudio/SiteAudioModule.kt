@@ -2,6 +2,8 @@ package expo.modules.siteaudio
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
@@ -17,6 +19,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Base64
+import android.net.Uri
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.jni.ArrayBuffer
@@ -52,6 +55,8 @@ class SiteAudioModule : Module() {
   private var playing = false
   private var audibleClock: Double? = null
   private val preview = VoicePreview()
+  private var folderPromise: Promise? = null
+  private var documentPromise: Promise? = null
   private val pendingRender = ArrayDeque<Pair<Long, ShortArray>>()
   private val pump = Runnable {
     synchronized(audioLock) {
@@ -75,6 +80,23 @@ class SiteAudioModule : Module() {
     AsyncFunction("writeTextAtomic") { uri: String, text: String ->
       AudioFiles.writeText(appContext.persistentFilesDirectory, uri, text)
     }
+    AsyncFunction("pickNoteFolder") { promise: Promise -> pickFolder(promise) }.runOnQueue(Queues.MAIN)
+    AsyncFunction("pickNoteDocument") { promise: Promise -> pickDocument(promise) }.runOnQueue(Queues.MAIN)
+    AsyncFunction("writeNoteFile") { folderUri: String, id: String, name: String, localPath: String, archive: Boolean ->
+      mapOf("uri" to NoteDocuments.write(context, Uri.parse(folderUri), id, name, localPath, archive).toString())
+    }
+    AsyncFunction("openNoteFile") { folderUri: String, id: String, name: String, archive: Boolean ->
+      NoteDocuments.open(context, Uri.parse(folderUri), id, name, archive)
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("deleteNoteFiles") { folderUri: String, id: String ->
+      NoteDocuments.deleteGenerated(context, Uri.parse(folderUri), id)
+    }
+    OnActivityResult { _, payload ->
+      when (payload.requestCode) {
+        PICK_FOLDER -> finishFolder(payload.resultCode, payload.data)
+        PICK_DOCUMENT -> finishDocument(payload.resultCode, payload.data)
+      }
+    }
     OnActivityEntersBackground {
       preview.stop()
       synchronized(audioLock) {
@@ -89,6 +111,70 @@ class SiteAudioModule : Module() {
       synchronized(audioLock) { stop() }
       outputThread.quitSafely()
     }
+  }
+
+  private fun pickFolder(promise: Promise) {
+    check(folderPromise == null) { "폴더 선택 창이 이미 열려 있습니다." }
+    val activity = requireNotNull(appContext.currentActivity) { "폴더 선택 창을 열 수 없습니다." }
+    folderPromise = promise
+    try {
+      activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+          Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+      ).putExtra(Intent.EXTRA_LOCAL_ONLY, true), PICK_FOLDER)
+    } catch (error: Exception) {
+      folderPromise = null
+      throw error
+    }
+  }
+
+  private fun pickDocument(promise: Promise) {
+    check(documentPromise == null) { "파일 선택 창이 이미 열려 있습니다." }
+    val activity = requireNotNull(appContext.currentActivity) { "파일 선택 창을 열 수 없습니다." }
+    documentPromise = promise
+    try {
+      activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
+        .addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_LOCAL_ONLY, true)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), PICK_DOCUMENT)
+    } catch (error: Exception) {
+      documentPromise = null
+      throw error
+    }
+  }
+
+  private fun finishFolder(result: Int, data: Intent?) {
+    val promise = folderPromise ?: return
+    folderPromise = null
+    if (result != Activity.RESULT_OK || data?.data == null) { promise.resolve(null); return }
+    try {
+      val uri = requireNotNull(data.data)
+      val flags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+      require(flags == (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) {
+        "읽기와 쓰기가 가능한 폴더를 선택해 주세요."
+      }
+      context.contentResolver.takePersistableUriPermission(uri, flags)
+      promise.resolve(mapOf("uri" to uri.toString(), "label" to NoteDocuments.label(context.contentResolver, uri)))
+    } catch (error: Exception) {
+      promise.reject("ERR_NOTE_FOLDER", error.message ?: "폴더 권한을 저장하지 못했습니다.", error)
+    }
+  }
+
+  private fun finishDocument(result: Int, data: Intent?) {
+    val promise = documentPromise ?: return
+    documentPromise = null
+    if (result != Activity.RESULT_OK || data?.data == null) { promise.resolve(null); return }
+    val uri = requireNotNull(data.data)
+    thread(name = "SiteAudioImport", isDaemon = true) {
+      try { promise.resolve(NoteDocuments.import(context.contentResolver, context.cacheDir, uri)) }
+      catch (error: Exception) {
+        promise.reject("ERR_NOTE_IMPORT", error.message ?: "파일을 가져오지 못했습니다.", error)
+      }
+    }
+  }
+
+  private companion object {
+    const val PICK_FOLDER = 7091
+    const val PICK_DOCUMENT = 7092
   }
 
   private fun start(uri: String?, id: Double, bargeIn: Boolean) {

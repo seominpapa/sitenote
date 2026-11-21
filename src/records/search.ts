@@ -8,6 +8,7 @@ export type Evidence = {
   createdAt: string;
   text: string;
   speaker?: string;
+  originalFilename?: string;
   timeMs?: number;
   role?: Turn['role'];
   section?: Turn['section'];
@@ -77,8 +78,9 @@ function clip(text: string, matchWord = '', max = 650): string {
 const ref = (id: string, anchor: string) => `[record:${id}#${anchor}]`;
 
 export function turnEvidence(record: RecordData, turn: Turn): Evidence {
+  const file = turn.section === 'meeting' && turn.id.startsWith('import-') ? record.originalFilename : undefined;
   return { recordId: record.id, turnId: turn.id, title: record.title, createdAt: record.createdAt,
-    speaker: speakerLabel(record, turn), timeMs: turn.timeMs, role: turn.role, section: turn.section,
+    speaker: speakerLabel(record, turn), ...(file ? {originalFilename:file} : {timeMs:turn.timeMs}), role: turn.role, section: turn.section,
     text: turn.text, reference: ref(record.id, turn.id) };
 }
 

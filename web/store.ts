@@ -3,8 +3,8 @@ import { buildNotesExport } from '../src/records/export.ts';
 import { parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown } from '../src/records/markdown.ts';
 import { assertId, isCategoryPath, safeId, type RecordData } from '../src/records/model.ts';
 import { summaryWithSpeakerNames } from '../src/records/summary-speakers.ts';
+import { noteFiles, type StoredRecord } from './note-files.ts';
 
-type StoredRecord = { id: string } & Partial<Record<FileName, string>>;
 type StorageIssue = { id: string; file: FileName; cause: unknown };
 type Guard = (action: () => void) => void;
 
@@ -75,6 +75,7 @@ export async function deleteRecords(ids: readonly string[]): Promise<void> {
     for (const id of keys) store.delete(id);
   });
   libraryChanged();
+  await writeNoteFiles([], keys);
 }
 
 function parseStored(entry: StoredRecord | undefined, onIssue?: (issue: StorageIssue) => void): RecordData | undefined {
@@ -104,6 +105,75 @@ function withRecord<T>(id: string, mode: IDBTransactionMode, action: (record: St
   });
 }
 
+function snapshotEntries() {
+  return useStore<StoredRecord[]>('readonly', (store, result) => {
+    const request = store.getAll();
+    request.onsuccess = () => result(request.result.filter((entry: StoredRecord) => safeId.test(entry.id) && parseStored(entry, () => {})));
+  });
+}
+
+const deletedFilesPrefix = 'sitenote:deleted-note-file:';
+export const noteFileError = 'sitenote:note-file-error';
+let pendingFiles: Promise<unknown> = Promise.resolve();
+function queueNoteFiles<T>(task: () => Promise<T>) {
+  const next = pendingFiles.then(task);
+  pendingFiles = next.catch(() => {});
+  return next;
+}
+
+function writeNoteFiles(ids: readonly string[], deletions: readonly string[] = []) {
+  const desktop = noteFiles();
+  if (!desktop || (!ids.length && !deletions.length)) return;
+  return queueNoteFiles(async () => {
+    for (const id of deletions) localStorage.setItem(deletedFilesPrefix + id, '1');
+    const latest = await Promise.all(ids.map(id => withRecord(id, 'readonly', entry => entry)));
+    await desktop.sync(latest.filter((entry): entry is StoredRecord => !!entry), deletions);
+    for (const id of deletions) localStorage.removeItem(deletedFilesPrefix + id);
+  }).catch(() => {
+    window.dispatchEvent(new CustomEvent(noteFileError, {detail:deletions.length ? 'delete' : 'save'}));
+  });
+}
+
+async function syncSnapshot() {
+  const desktop = noteFiles();
+  if (!desktop) return;
+  const entries = await snapshotEntries();
+  const liveIds = new Set(entries.map(entry => entry.id));
+  const deletedIds = Object.keys(localStorage).filter(key => key.startsWith(deletedFilesPrefix))
+    .map(key => key.slice(deletedFilesPrefix.length)).filter(id => safeId.test(id) && !liveIds.has(id));
+  for (const id of deletedIds) {
+    await desktop.sync([], [id]);
+    localStorage.removeItem(deletedFilesPrefix + id);
+  }
+  for (const entry of entries) await desktop.sync([entry]);
+}
+
+export function refreshNoteFiles() {
+  return queueNoteFiles(syncSnapshot);
+}
+
+export async function chooseNoteFolder() {
+  const desktop = noteFiles();
+  if (!desktop) return;
+  return queueNoteFiles(async () => {
+    return desktop.chooseFolder(await snapshotEntries());
+  });
+}
+
+export async function saveImportedRecord(record: RecordData) {
+  const desktop = noteFiles();
+  if (!desktop) throw Error('데스크톱 앱에서 문서를 가져올 수 있습니다.');
+  const entry = {id:record.id, 'transcript.md':transcriptMarkdown(record)};
+  await useStore<void>('readwrite', store => { store.add(entry); });
+  try {
+    await queueNoteFiles(() => desktop.saveImport(entry));
+  } catch (error) {
+    await useStore<void>('readwrite', store => { store.delete(record.id); });
+    throw error;
+  }
+  libraryChanged();
+}
+
 const version = (record: RecordData) => new Date(Math.max(Date.now(), Date.parse(record.updatedAt) + 1)).toISOString();
 
 export const records = {
@@ -123,6 +193,7 @@ export const records = {
     assertId(record.id);
     await useStore<void>('readwrite', store => { store.add({id:record.id, 'transcript.md':transcriptMarkdown(record)}); });
     libraryChanged();
+    await writeNoteFiles([record.id]);
   },
   update: (id: string, edit: (latest: RecordData) => RecordData) => withRecord(id, 'readwrite', (entry, store) => {
     const latest = parseStored(entry);
@@ -133,8 +204,11 @@ export const records = {
     const updated = {...candidate, updatedAt:version(latest)};
     store.put({...entry, 'transcript.md':transcriptMarkdown(updated)});
     return {record:updated, changed:true};
-  }).then(result => {
-    if (result?.changed) libraryChanged();
+  }).then(async result => {
+    if (result?.changed) {
+      libraryChanged();
+      await writeNoteFiles([id]);
+    }
     return result?.record;
   }),
   saveSummary: (base: RecordData, markdown: string, questions: string[]) => withRecord(base.id, 'readwrite', (entry, store) => {
@@ -143,8 +217,11 @@ export const records = {
       JSON.stringify(latest.questions) !== JSON.stringify(base.questions)) return;
     store.put({...entry, 'summary.md':summaryMarkdown(markdown, questions)});
     return {...latest, summary:markdown, questions};
-  }).then(record => {
-    if (record) libraryChanged();
+  }).then(async record => {
+    if (record) {
+      libraryChanged();
+      await writeNoteFiles([record.id]);
+    }
     return record;
   }),
 };
@@ -229,8 +306,9 @@ function editCategoryBatch(ids: string[], edit: (note: RecordData) => RecordData
       if (updated.length || expected?.length) store.put({id:categoryUndoId, entries:nextUndo} satisfies UndoJournal);
       result({records:updated, entries:updated.length || expected?.length ? nextUndo : entries});
     });
-  }).then(result => {
+  }).then(async result => {
     if (!result.stale && (result.records.length || expected?.length)) libraryChanged();
+    await writeNoteFiles(result.records.map(record => record.id));
     return result;
   });
 }

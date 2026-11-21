@@ -117,7 +117,11 @@ label > input:not([type=checkbox]), label > select { width: 100% }
 
 .library { margin-block-start: clamp(1.75rem, 4vw, 3rem); min-width: 0 }
 .section-heading { align-items: start; flex-direction: column }
-.library > .section-heading { flex-direction: row; align-items: center }
+.library > .section-heading { flex-direction: row; align-items: center; flex-wrap: wrap }
+.folder-path, .original-file, .document-import { overflow-wrap: anywhere }
+.original-file { margin-top: .55rem }
+.document-import label { display: grid; gap: .3rem }
+.document-import > p { flex-basis: 100% }
 .section-heading h2, .page-stack > h2, .summary h2, .source-panel h2, .source-reader h2 { color: var(--ink); font-size: clamp(1.25rem, 2.4vw, 1.5rem); line-height: 1.25 }
 .section-heading h2 small { margin-inline-start: .38rem; color: var(--muted-ink); font-size: .75rem; font-variant-numeric: tabular-nums }
 .library-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .55rem .75rem; margin-block: .92rem .72rem }

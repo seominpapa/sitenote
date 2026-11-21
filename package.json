@@ -17,12 +17,14 @@
     "test:web": "playwright test"
   },
   "dependencies": {
+    "cfb": "^1.2.2",
     "expo": "~58.0.26",
     "expo-dev-client": "~58.0.21",
     "expo-file-system": "~58.0.14",
     "expo-keep-awake": "~58.0.4",
     "expo-secure-store": "~58.0.3",
     "expo-sharing": "~58.0.23",
+    "fflate": "^0.8.3",
     "react": "19.3.0",
     "react-dom": "^19.3.0",
     "react-native": "0.88.1",

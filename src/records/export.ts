@@ -20,6 +20,7 @@ function readableSpeaker(record: RecordData, turn: Turn) {
 
 function readableTranscript(record: RecordData) {
   const lines = [`# ${heading(record.title)}`];
+  if (record.originalFilename) return [...lines, ...record.turns.map(turn => turn.text.replace(/</g,'&lt;'))].join('\n\n');
   let section: Turn['section'] | undefined;
   for (const turn of record.turns) {
     if (section !== turn.section) {
