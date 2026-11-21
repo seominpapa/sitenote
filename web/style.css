@@ -226,6 +226,9 @@ label > input:not([type=checkbox]), label > select { width: 100% }
 .turn p, .summary p { margin-block-start: .35rem; white-space: pre-wrap; line-height: 1.62 }
 .turn-by { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .16rem .5rem; color: var(--link); font-size: .8125rem; font-weight: 600 }
 .turn-by small { font-size: .75rem; font-weight: 400 }
+.turn-original { margin-block-start: .38rem; color: var(--muted-ink); font-size: .8125rem }
+.turn-original > summary { width: fit-content; min-height: 1.75rem; padding-block: .24rem; color: var(--link); cursor: pointer }
+.turn-original > p { padding-inline-start: .6rem; border-inline-start: 2px solid var(--divider) }
 .partial .turn { background: var(--panel-soft) }
 .summary, .edit-record, .source-panel { min-width: 0; padding: clamp(1rem, 2.4vw, 1.5rem); border: 1px solid var(--card-line); border-radius: var(--radius); background: var(--panel-soft) }
 .summary h3 { margin-block-start: .7rem; font-size: 1rem; line-height: 1.3 }

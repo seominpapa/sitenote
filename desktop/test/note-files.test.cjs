@@ -14,91 +14,88 @@ async function fixture() {
 }
 
 const key = (id) => Buffer.from(id).toString('base64url');
-const notePath = (folder, id, filename) => join(folder, 'Sitenote', 'notes', key(id), filename);
+const folderName = title => `20261121_${title}`;
+const notePath = (folder, title, filename) => join(folder, 'Sitenote', 'notes', folderName(title), filename);
+const originalPath = (folder, title) => join(folder, 'Sitenote', 'originals', folderName(title), 'original.txt');
+const entry = (id, transcript, fields = {}) => ({ id, folderName:folderName(id), 'transcript.md':transcript, ...fields });
 
 test('sync atomically materializes notes and applies updates and deletions', async () => {
   const { folder, files } = await fixture();
   assert.deepEqual(files.status(), { folder, root: join(folder, 'Sitenote') });
 
   await files.sync([
-    { id: 'one', 'transcript.md': '# One', 'summary.md': 'Short' },
-    { id: 'two', 'transcript.md': '# Two' },
+    entry('one', '# One', {'summary.md':'Short'}),
+    entry('two', '# Two'),
   ]);
   assert.equal(await readFile(notePath(folder, 'one', 'transcript.md'), 'utf8'), '# One');
   assert.equal(await readFile(notePath(folder, 'one', 'summary.md'), 'utf8'), 'Short');
 
-  await files.sync([{ id: 'one', 'transcript.md': '# Updated' }], ['two']);
+  await files.sync([entry('one', '# Updated')], ['two']);
   assert.equal(await readFile(notePath(folder, 'one', 'transcript.md'), 'utf8'), '# Updated');
-  assert.deepEqual(await readdir(join(folder, 'Sitenote', 'notes')), [key('one')]);
+  assert.deepEqual(await readdir(join(folder, 'Sitenote', 'notes')), [folderName('one')]);
   await assert.rejects(readFile(notePath(folder, 'one', 'summary.md')));
 });
 
-test('saveImport preserves exact originals, converted Markdown, and collision history', async () => {
-  const { folder, files } = await fixture();
+test('import creates only the Markdown and text archive in the public folders; exact bytes stay private', async () => {
+  const { folder, profile, files } = await fixture();
   const original = Buffer.from([0, 255, 1, 2, 3]);
   const first = await files.saveImport(
-    { id: 'imported', 'transcript.md': '# Clean\n\nBody' },
-    'field.docx', original, '# Converted\n\nHeading and body',
+    entry('imported', '# Converted\n\nHeading and body'),
+    'field.docx', original,
   );
   assert.equal(await readFile(first.path).then((value) => value.equals(original)), true);
-  assert.equal(await readFile(notePath(folder, 'imported', 'source.md'), 'utf8'), '# Converted\n\nHeading and body');
+  assert.equal(first.path.startsWith(profile + '/'), true);
+  assert.equal(await readFile(notePath(folder, 'imported', 'transcript.md'), 'utf8'), '# Converted\n\nHeading and body');
+  assert.deepEqual(await readdir(notePath(folder, 'imported', '')), ['transcript.md']);
+  assert.equal(await readFile(originalPath(folder, 'imported'), 'utf8'), '# Converted\n\nHeading and body');
+  assert.deepEqual(await readdir(join(originalPath(folder, 'imported'), '..')), ['original.txt']);
   assert.equal(await files.revealOriginal('imported'), first.path);
 
   const duplicate = await files.saveImport(
-    { id: 'imported', 'transcript.md': '# Clean' },
-    'field.docx', original, '# Converted',
+    entry('imported', '# Converted'),
+    'field.docx', original,
   );
   assert.equal(duplicate.path, first.path);
 
   const second = await files.saveImport(
-    { id: 'imported', 'transcript.md': '# Clean again' },
-    'field.docx', Buffer.from('different'), '# Converted again',
+    entry('imported', '# Converted again'),
+    'field.docx', Buffer.from('different'),
   );
   assert.notEqual(second.path, first.path);
   assert.equal(basename(second.path), 'field-2.docx');
   assert.equal(await readFile(first.path).then((value) => value.equals(original)), true);
   assert.equal(await files.revealOriginal('imported'), second.path);
 
-  await files.sync([{ id: 'imported', 'transcript.md': '# Later edit' }]);
-  assert.equal(await readFile(notePath(folder, 'imported', 'source.md'), 'utf8'), '# Converted again');
-
-  const note = join(folder, 'Sitenote', 'notes', key('imported'));
-  await rename(note, `${note}.old`);
-  await files.sync([{ id: 'imported', 'transcript.md': '# Recovered edit' }]);
-  assert.equal(await readFile(notePath(folder, 'imported', 'source.md'), 'utf8'), '# Converted again');
-  const latest = join(folder, 'Sitenote', 'originals', key('imported'), '.latest');
+  await files.sync([entry('imported', '# Later edit',{imported:true,'summary.md':'App only'})]);
+  assert.equal(await readFile(notePath(folder, 'imported', 'transcript.md'), 'utf8'), '# Later edit');
+  assert.deepEqual(await readdir(notePath(folder, 'imported', '')), ['transcript.md']);
+  const latest = join(second.path, '..', '.latest');
   await rename(latest, `${latest}.old`);
   assert.equal(await files.revealOriginal('imported'), second.path);
 
   await files.sync([], ['imported']);
+  assert.equal(await readFile(originalPath(folder, 'imported'), 'utf8'), '# Later edit');
   assert.equal(await readFile(first.path).then((value) => value.equals(original)), true);
   assert.equal(await files.revealOriginal('imported'), second.path);
 });
 
-test('chooseFolder copies the snapshot and archives while leaving the previous folder untouched', async () => {
+test('chooseFolder projects the new snapshot and text archive without touching the previous folder', async () => {
   const { root, folder, files } = await fixture();
-  const entry = { id: 'move', 'transcript.md': '# Before' };
-  const imported = await files.saveImport(entry, 'source.pdf', Buffer.from('pdf bytes'), '# Source');
-  await files.saveImport(entry, 'source.pdf', Buffer.from('new pdf bytes'), '# Source');
-  await files.saveImport(entry, 'source.pdf', Buffer.from('pdf bytes'), '# Source');
+  const moving = entry('move', '# Source', {imported:true});
+  const imported = await files.saveImport(moving, 'source.pdf', Buffer.from('pdf bytes'));
   const next = join(root, 'next');
   await mkdir(next);
   const targetFiles = createNoteFiles({ profile: join(root, 'target-profile'), defaultFolder: next });
   await mkdir(join(root, 'target-profile'));
-  await targetFiles.saveImport(entry, 'source.pdf', Buffer.from('target bytes'), '# Target');
+  await targetFiles.saveImport({...moving, 'transcript.md':'# Target'}, 'source.pdf', Buffer.from('target bytes'));
 
-  assert.deepEqual(await files.chooseFolder(next, [{ ...entry, 'transcript.md': '# After' }]), { folder: next });
+  assert.deepEqual(await files.chooseFolder(next, [{ ...moving, 'transcript.md': '# After' }]), { folder: next });
   assert.deepEqual(files.status(), { folder: next, root: join(next, 'Sitenote') });
-  assert.equal(await readFile(notePath(folder, 'move', 'transcript.md'), 'utf8'), '# Before');
+  assert.equal(await readFile(notePath(folder, 'move', 'transcript.md'), 'utf8'), '# Source');
   assert.equal(await readFile(imported.path, 'utf8'), 'pdf bytes');
-  assert.equal(await readFile(notePath(next, 'move', 'transcript.md'), 'utf8'), '# After');
-  assert.equal(await readFile(notePath(next, 'move', 'source.md'), 'utf8'), '# Source');
-  const targetOriginal = join(next, 'Sitenote', 'originals', key('move'), 'source.pdf');
-  assert.equal(await readFile(targetOriginal, 'utf8'), 'target bytes');
-  const archiveFolder = join(next, 'Sitenote', 'originals', key('move'));
-  const copiedBytes = await Promise.all((await readdir(archiveFolder))
-    .filter((name) => name !== '.latest').map((name) => readFile(join(archiveFolder, name), 'utf8')));
-  assert.deepEqual(copiedBytes.sort(), ['new pdf bytes', 'pdf bytes', 'target bytes'].sort());
+  assert.equal(await readFile(notePath(next, 'move', 'transcript.md'), 'utf8'), '# Target');
+  assert.equal(await readFile(join(next,'Sitenote','notes',folderName('move')+'-2','transcript.md'), 'utf8'), '# After');
+  assert.equal(await readFile(join(next,'Sitenote','originals',folderName('move')+'-2','original.txt'), 'utf8'), '# After');
 
   const restarted = createNoteFiles({ profile: join(root, 'profile'), defaultFolder: folder });
   assert.deepEqual(restarted.status(), { folder: next, root: join(next, 'Sitenote') });
@@ -115,6 +112,54 @@ test('chooseFolder copies the snapshot and archives while leaving the previous f
   assert.deepEqual(files.status(), { folder: next, root: join(next, 'Sitenote') });
 });
 
+test('legacy originals remain untouched and can be opened after changing the save folder', async () => {
+  const { root, folder, files } = await fixture();
+  await files.sync([]);
+  const legacy = join(folder, 'Sitenote', 'originals', key('legacy'));
+  const legacyNote = join(folder, 'Sitenote', 'notes', key('legacy'));
+  await Promise.all([mkdir(legacy),mkdir(legacyNote)]);
+  await Promise.all([writeFile(join(legacy,'legacy.docx'),'exact raw'),writeFile(join(legacy,'.latest'),'legacy.docx'),
+    writeFile(join(legacyNote,'source.md'),'legacy markdown')]);
+  assert.equal(await files.revealOriginal('legacy'),join(legacy,'legacy.docx'));
+  const next = join(root,'new');
+  await mkdir(next);
+  await files.chooseFolder(next,[entry('legacy','converted',{imported:true})]);
+  assert.equal(await readFile(await files.revealOriginal('legacy'),'utf8'),'exact raw');
+  assert.equal(await readFile(join(legacyNote,'source.md'),'utf8'),'legacy markdown');
+  assert.equal(await readFile(originalPath(next,'legacy'),'utf8'),'converted');
+});
+
+test('never deletes untracked files, directories, or a replacement folder', async () => {
+  const { folder, files } = await fixture();
+  await files.sync([entry('owner','transcript')]);
+  const note = notePath(folder,'owner','');
+  await writeFile(join(note,'unmanaged.txt'),'keep');
+  await files.sync([],['owner']);
+  assert.deepEqual(await readdir(note), ['unmanaged.txt']);
+  await files.sync([entry('second','owned')]);
+  const second = notePath(folder,'second','');
+  await rename(second,`${second}-moved`);
+  await mkdir(second);
+  await writeFile(join(second,'transcript.md'),'not app owned');
+  await files.sync([],['second']);
+  assert.equal(await readFile(join(second,'transcript.md'),'utf8'),'not app owned');
+});
+
+test('same date and title get independent folders; renaming keeps the original linked', async () => {
+  const { folder, files } = await fixture();
+  const duplicate = {folderName:folderName('회의록')};
+  await files.sync([entry('left','First',duplicate),entry('right','Second',duplicate)]);
+  assert.equal(await readFile(notePath(folder,'회의록','transcript.md'),'utf8'),'First');
+  assert.equal(await readFile(notePath(folder,'회의록-2','transcript.md'),'utf8'),'Second');
+
+  const imported = entry('document','본문',{folderName:folderName('현장 회의'),imported:true});
+  const saved = await files.saveImport(imported,'report.pdf',Buffer.from('original'));
+  await files.sync([{...imported,folderName:folderName('수정한 제목')}]);
+  assert.equal(await files.revealOriginal('document'),saved.path);
+  assert.equal(await readFile(originalPath(folder,'수정한 제목'),'utf8'),'본문');
+  await assert.rejects(readFile(originalPath(folder,'현장 회의')),{code:'ENOENT'});
+});
+
 test('corrupt configuration is ignored without operating on its folder', async () => {
   const { root, profile, folder } = await fixture();
   const trap = join(root, 'trap');
@@ -129,12 +174,13 @@ test('corrupt configuration is ignored without operating on its folder', async (
 
 test('rejects traversal, symlinks, and an unrelated nonempty managed directory', async (t) => {
   const { root, folder, files } = await fixture();
-  await assert.rejects(files.sync([{ id: '../escape', 'transcript.md': 'no' }]));
+  await assert.rejects(files.sync([entry('../escape','no')]));
+  await assert.rejects(files.sync([entry('safe','no',{folderName:'20261121_../escape'})]));
   await assert.rejects(files.saveImport(
-    { id: 'safe', 'transcript.md': 'no' }, '../escape.pdf', Buffer.from('no'), 'no',
+    entry('safe','no'), '../escape.pdf', Buffer.from('no'),
   ));
   await assert.rejects(files.saveImport(
-    { id: 'safe', 'transcript.md': 'no' }, '.latest', Buffer.from('no'), 'no',
+    entry('safe','no'), '.latest', Buffer.from('no'),
   ));
 
   const unrelated = join(root, 'unrelated');
@@ -148,12 +194,12 @@ test('rejects traversal, symlinks, and an unrelated nonempty managed directory',
   const outside = join(root, 'outside');
   await mkdir(outside);
   await files.sync([]);
-  await symlink(outside, join(folder, 'Sitenote', 'originals', key('unsafe-original')));
+  await symlink(outside, join(folder, 'Sitenote', 'originals', folderName('unsafe-original')));
   await assert.rejects(files.saveImport(
-    { id: 'unsafe-original', 'transcript.md': 'no' }, 'source.pdf', Buffer.from('no'), 'no',
+    entry('unsafe-original','no'), 'source.pdf', Buffer.from('no'),
   ), /symbolic link/i);
   await rm(join(folder, 'Sitenote', 'notes'), { recursive: true });
   await symlink(outside, join(folder, 'Sitenote', 'notes'));
-  await assert.rejects(files.sync([{ id: 'safe', 'transcript.md': 'no' }]), /symbolic link/i);
+  await assert.rejects(files.sync([entry('safe','no')]), /symbolic link/i);
   assert.deepEqual(await readdir(outside), []);
 });

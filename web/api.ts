@@ -3,6 +3,7 @@ import { isCategoryPath, type RecordData } from '../src/records/core.ts';
 import { TYPED_QUESTION_LIMIT, typedJudgeRequest, typedQuestionRequest, type TypedVerdict } from '../src/typedFollowup.ts';
 import { readVoicePreview } from '../src/voice-preview.ts';
 import type { AiVoice } from '../server/voices.mjs';
+import type { CorrectionRequest } from '../src/transcript-correction.ts';
 
 export type Health = { ok: true; providers: { live: boolean; soniox: boolean; text: boolean } };
 export type ProviderKeys = { openaiKey?: string; sonioxKey?: string };
@@ -23,6 +24,8 @@ async function request<T>(path: string, body?: object): Promise<T> {
 
 export const health = () => request<Health>('/health');
 export const saveKeys = (keys: ProviderKeys) => request<Health>('/settings/keys', keys);
+export const correctTranscription = (body: CorrectionRequest) =>
+  request<{corrections: {id: string; text: string}[]}>('/transcript-corrections', body);
 export async function fetchVoicePreview(voice: AiVoice, signal: AbortSignal) {
   const response = await fetch('/v1/voice-preview', {
     method:'POST', credentials:'same-origin', redirect:'error', signal,

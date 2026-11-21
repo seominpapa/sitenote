@@ -3,14 +3,13 @@ import { timeLabel, type Evidence } from '../src/records/core.ts';
 import { noteFiles } from './note-files.ts';
 import { date, Icon, type Jump } from './ui.tsx';
 
-type PastSource = Evidence & { turnId: string };
+type PastSource = Evidence;
 
 export function pastSources(recordId: string, evidence: Evidence[]) {
   const sources = new Map<string, PastSource>();
   for (const item of evidence) {
-    if (!item.turnId || item.recordId === recordId) continue;
-    const key = JSON.stringify([item.recordId, item.turnId]);
-    if (!sources.has(key)) sources.set(key, { ...item, turnId: item.turnId });
+    if ((!item.turnId && !item.summaryOnly) || item.recordId === recordId) continue;
+    sources.set(item.reference, item);
   }
   return [...sources.values()];
 }
@@ -18,6 +17,7 @@ export function pastSources(recordId: string, evidence: Evidence[]) {
 function SourceMetadata({ item }: { item: PastSource }) {
   return <span className="source-meta">
     <time dateTime={item.createdAt}>{date.format(new Date(item.createdAt))}</time>
+    {item.summaryOnly && <span> · 요약에만 있는 내용</span>}
     {item.originalFilename && <span> · 가져온 문서</span>}
     {item.timeMs !== undefined && <span> · 발언 위치 {timeLabel(item.timeMs)}</span>}
   </span>;
@@ -41,9 +41,12 @@ function SourceLabel({ item }: { item: PastSource }) {
 }
 
 function SourceGroups({ sources, quoted, render }: { sources: PastSource[]; quoted?: string[]; render: (item: PastSource) => ReactNode }) {
-  const direct = sources.filter(item => quoted?.includes(item.reference));
-  const provided = sources.filter(item => !quoted?.includes(item.reference));
-  const groups: [PastSource[], string][] = [[direct, '답변에서 직접 인용한 원문'], [provided, direct.length ? '답변에 제공한 다른 원문' : '답변에 제공한 원문']];
+  const original = sources.filter(item => !item.summaryOnly);
+  const direct = original.filter(item => quoted?.includes(item.reference));
+  const provided = original.filter(item => !quoted?.includes(item.reference));
+  const groups: [PastSource[], string][] = [[direct, '답변에서 직접 인용한 원문'],
+    [provided, direct.length ? '답변에 제공한 다른 원문' : '답변에 제공한 원문'],
+    [sources.filter(item => item.summaryOnly), '요약에만 있는 내용']];
   return <>{groups.map(([items, label]) => {
     return items.length ? <div key={label}><h3>{label}</h3><ul className="source-entries" aria-label={label} role="list">
       {items.map(item => <li key={item.reference}>{render(item)}</li>)}
@@ -66,7 +69,7 @@ export function VoiceSources({ sources, quoted }: { sources: PastSource[]; quote
 
   return <>
     {!!sources.length && <section className="source-panel" aria-labelledby={headingId} data-testid="live-sources">
-      <h2 id={headingId}>이 답변의 과거 원문</h2>
+      <h2 id={headingId}>{sources.some(item => item.summaryOnly) ? '이 답변의 참고 기록' : '이 답변의 과거 원문'}</h2>
       <SourceGroups sources={sources} quoted={quoted} render={item =>
         <button type="button" className="source-entry" aria-haspopup="dialog" onClick={event => {
           opener.current = event.currentTarget;
@@ -78,7 +81,7 @@ export function VoiceSources({ sources, quoted }: { sources: PastSource[]; quote
       opener.current?.focus();
     }}>
       <header className="source-reader-header">
-        <h2 id={readerId}>원문 보기</h2>
+        <h2 id={readerId}>{selected?.summaryOnly ? '요약에만 있는 내용' : '원문 보기'}</h2>
         <form method="dialog"><button type="submit" className="button quiet">닫기</button></form>
       </header>
       {selected && <article>
@@ -92,7 +95,7 @@ export function VoiceSources({ sources, quoted }: { sources: PastSource[]; quote
 }
 
 export function SourceLink({ item, open, className, children }: { item: Evidence; open: Jump; className: string; children: ReactNode }) {
-  const part = item.turnId ?? 'summary';
+  const part = item.targetId ?? item.turnId ?? 'summary';
   return <a className={className} href={`#record:${encodeURIComponent(item.recordId)}#${encodeURIComponent(part)}`} onClick={event => {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -103,7 +106,7 @@ export function SourceLink({ item, open, className, children }: { item: Evidence
 export function SavedSources({ sources, quoted, open }: { sources: PastSource[]; quoted?: string[]; open: Jump }) {
   const headingId = useId();
   return <section className="source-panel" aria-labelledby={headingId} data-testid="saved-sources">
-    <h2 id={headingId}>이 답변의 과거 원문</h2>
+    <h2 id={headingId}>{sources.some(item => item.summaryOnly) ? '이 답변의 참고 기록' : '이 답변의 과거 원문'}</h2>
     <SourceGroups sources={sources} quoted={quoted} render={item =>
       <SourceLink item={item} open={open} className="source-entry"><SourceLabel item={item} /></SourceLink>} />
   </section>;

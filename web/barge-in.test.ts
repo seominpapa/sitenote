@@ -53,22 +53,30 @@ test('an impulse or short noise burst does not cut the answer or leak a candidat
   const quiet = frame(origin, () => 0);
   const impulse = frame(origin + FRAME_SAMPLES, i => i % FRAME_SAMPLES === 71 ? 0.9 : 0);
   assert.deepEqual(detector.read(impulse, true), [{pcm:impulse.pcm, suppressed:true}]);
-  const burst = Array.from({length:3}, (_, j) => frame(origin + (j + 2) * FRAME_SAMPLES, i => 0.21 * tone(1010, i)));
+  const burst = Array.from({length:6}, (_, j) => frame(origin + (j + 2) * FRAME_SAMPLES, i => 0.21 * tone(1010, i)));
   for (const input of burst) assert.deepEqual(detector.read(input, true), []);
   assert.deepEqual(detector.read(quiet, true), [...burst, quiet].map(({pcm}) => ({pcm, suppressed:true})));
 });
 
+test('continuous low background sound does not stop AI playback', () => {
+  const detector = setup();
+  for (let j = 2; j < 17; j++) {
+    const input = frame(origin + j * FRAME_SAMPLES, i => 0.027 * tone(997, i));
+    assert.deepEqual(detector.read(input, true), [{pcm:input.pcm, suppressed:true}]);
+  }
+});
+
 test('sustained independent voice over echo preserves onset before sending later frames', () => {
   const detector = setup();
-  const speech = Array.from({length:6}, (_, j) => frame(origin + (j + 6) * FRAME_SAMPLES,
+  const speech = Array.from({length:9}, (_, j) => frame(origin + (j + 6) * FRAME_SAMPLES,
     i => 0.28 * tone(881, i) + 0.41 * echoSource(i - origin - acousticDelay)));
-  for (const input of speech.slice(0, 4)) assert.deepEqual(detector.read(input, true), []);
-  assert.deepEqual(detector.read(speech[4], true), [
-    {pcm:speech[0].pcm, bargeIn:true}, ...speech.slice(1, 5).map(({pcm}) => ({pcm})),
+  for (const input of speech.slice(0, 7)) assert.deepEqual(detector.read(input, true), []);
+  assert.deepEqual(detector.read(speech[7], true), [
+    {pcm:speech[0].pcm, bargeIn:true}, ...speech.slice(1, 8).map(({pcm}) => ({pcm})),
   ]);
-  detector.stopOutput(speech[4].end);
-  assert.deepEqual(detector.read(speech[5], true), [{pcm:speech[5].pcm}]);
-  const echo = frame(origin + 12 * FRAME_SAMPLES, i => echoSource(i - origin - acousticDelay));
+  detector.stopOutput(speech[7].end);
+  assert.deepEqual(detector.read(speech[8], true), [{pcm:speech[8].pcm}]);
+  const echo = frame(origin + 15 * FRAME_SAMPLES, i => echoSource(i - origin - acousticDelay));
   assert.deepEqual(detector.read(echo, true), [{pcm:echo.pcm, suppressed:true}]);
 });
 

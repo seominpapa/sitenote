@@ -110,3 +110,13 @@ test('permission failures are scrubbed before being forwarded', async t => {
   assert.match(events.at(-1)[1],/GPT-Live-1.1/);
   assert.doesNotMatch(events.at(-1)[1],/private-key/);
 });
+
+test('an immediate connection failure reports one error without throwing', async () => {
+  const failures = [];
+  const voice = openQuestionVoice({openaiKey:'mock',upstream() { throw new Error('connection failed'); }}, {
+    ready() {}, fail(message) { failures.push(message); },
+  });
+  assert.equal(voice.answer('납기는?', ''),true);
+  await Promise.resolve();
+  assert.equal(failures.length,1);
+});

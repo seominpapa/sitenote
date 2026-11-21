@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { searchRecords, speakerGroups, speakerLabel, timeLabel, type Evidence, type RecordData, type Turn } from '../src/records/core.ts';
+import { searchRecords, speakerGroups, speakerLabel, summarySourceAnchor, summarySourceEvidence, timeLabel, type Evidence, type RecordData, type Turn } from '../src/records/core.ts';
 import { summaryWithSpeakerNames } from '../src/records/summary-speakers.ts';
 import { date, Icon, type Jump } from './ui.tsx';
 import { OriginalFile, pastSources, SavedSources, SourceLink, VoiceSources } from './source-panels.tsx';
@@ -206,7 +206,7 @@ export function RecordList({ records, loading, busy, open, remove, removeMany, e
       <label>프로젝트 (선택)<input name="project" maxLength={120} /></label>
       <button className="button primary" disabled={busy} type="submit">{busy ? '가져오는 중…' : '파일 선택'}</button>
       <button className="button quiet" disabled={busy} type="button" onClick={() => setAddingDocument(false)}>취소</button>
-      <p className="muted">MD, TXT, DOCX, HWP, HWPX를 기기에서 변환합니다. AI가 노트를 참고할 때 관련 문서의 일부가 답변 요청에 포함될 수 있습니다.</p>
+      <p className="muted">MD, TXT, DOCX, HWP, HWPX, 텍스트 PDF를 기기에서 변환합니다. AI가 노트를 참고할 때 관련 문서의 일부가 답변 요청에 포함될 수 있습니다.</p>
     </form>}
     <div className="library-toolbar">
       <div className="library-tabs" role="group" aria-label="기록 보기">{libraryViews.map(([mode, label]) =>
@@ -261,15 +261,23 @@ function transcriptSpeaker(record: RecordData, turn: Turn) {
   return `참가자 답변 · ${label}`;
 }
 
-function Transcript({ turns, record, partials = false, afterTurn }: { turns: Turn[]; record: RecordData; partials?: boolean; afterTurn?: (turn: Turn) => ReactNode }) {
+function Transcript({ turns, record, partials = false, afterTurn, originalAt }: {
+  turns: Turn[]; record: RecordData; partials?: boolean; afterTurn?: (turn: Turn) => ReactNode; originalAt?: string;
+}) {
   return <div className={partials ? 'transcript partial' : 'transcript'}>
-    {turns.map(turn => <article id={partials ? undefined : turn.id} tabIndex={partials ? undefined : -1} data-testid={partials ? undefined : 'transcript-turn'} key={turn.id} className={turn.role === 'ai' ? 'turn ai' : 'turn'}>
-      <div className="turn-by"><span>{transcriptSpeaker(record, turn)}</span>
-        {!(record.originalFilename && turn.id.startsWith('import-')) && <small>{sectionNames[turn.section]} · {timeLabel(turn.timeMs)}{turn.interrupted ? ' · 중단' : ''}</small>}
-      </div>
-      <p>{turn.text}</p>
-      {afterTurn?.(turn)}
-    </article>)}
+    {turns.map(turn => {
+      const corrected = !partials && turn.role !== 'ai' && turn.correctedText !== turn.text ? turn.correctedText : undefined;
+      return <article id={partials ? undefined : turn.id} tabIndex={partials ? undefined : -1} data-testid={partials ? undefined : 'transcript-turn'} key={turn.id} className={turn.role === 'ai' ? 'turn ai' : 'turn'}>
+        <div className="turn-by"><span>{transcriptSpeaker(record, turn)}</span>
+          {!(record.originalFilename && turn.id.startsWith('import-')) && <small>{sectionNames[turn.section]} · {timeLabel(turn.timeMs)}{turn.interrupted ? ' · 중단' : ''}{corrected ? ' · AI 보정' : ''}</small>}
+        </div>
+        <p>{corrected || turn.text}</p>
+        {corrected && <details className="turn-original" open={originalAt === turn.id || undefined}>
+          <summary>보정 전 원문 보기</summary><p>{turn.text}</p>
+        </details>}
+        {afterTurn?.(turn)}
+      </article>;
+    })}
   </div>;
 }
 
@@ -373,7 +381,12 @@ function voiceStatus(status: Snapshot, mode: Mode, invited: boolean) {
     if (status.phase === 'question') return '지금 질문하세요';
     return 'AI가 답변을 준비하는 중';
   }
-  return status.phase === 'recording' ? recordingLabels[mode] : phases[status.phase];
+  if (status.phase === 'recording') {
+    if (status.transcriptionPaused) return mode === 'meeting' ? '회의 전사 일시정지' : '개인 대화 전사 일시정지';
+    if (status.micMuted) return '마이크 중지';
+    return recordingLabels[mode];
+  }
+  return phases[status.phase];
 }
 
 export function Voice({ session, status, mode, record, evidence, finish, busy, aiAvailable, readMeter, withAudio }: {
@@ -400,8 +413,8 @@ export function Voice({ session, status, mode, record, evidence, finish, busy, a
   const stopping = status.phase === 'finishing' || status.phase === 'finished';
   const sources = pastSources(record.id, evidence);
   const latestAnswer = record.turns.findLast(turn => turn.role === 'ai');
-  const micStatus = status.paused ? '일시정지' : status.capturing && !stopping ? '녹음 중' : '대기 중';
-  const sonioxStatus = status.paused ? 'Soniox 답변 전사 일시정지' : lost ? 'Soniox 답변 전사 연결 끊김'
+  const micStatus = status.paused || status.micMuted ? '일시정지' : status.capturing && !stopping ? '녹음 중' : '대기 중';
+  const sonioxStatus = status.paused || status.micMuted ? 'Soniox 답변 전사 일시정지' : lost ? 'Soniox 답변 전사 연결 끊김'
     : stopping ? 'Soniox 마지막 전사 저장 중'
     : status.playback ? 'AI 질문을 재생하는 중입니다.'
     : status.liveReady && status.followupState === 'prompting' ? '질문이 끝나면 답변을 전사합니다.'
@@ -412,9 +425,10 @@ export function Voice({ session, status, mode, record, evidence, finish, busy, a
         <h1 className="record-title">{mode === 'followup' ? '보충 질문' : record.title}</h1>
         <p className="muted">{mode === 'meeting' ? '회의 녹음' : mode === 'personal' ? '개인 대화 녹음' : '실시간 음성 노트'}</p>
         <p className="recording-status" data-testid="voice-status" role="status"><span className={status.capturing ? 'dot active' : 'dot'} />{voiceStatus(status, mode, aiInvited)}</p>
-        {canInvite && recording && !status.paused && <p className="muted">{aiAvailable
+        {aiInvited && status.transcriptionPaused && <p className="muted" role="status">{mode === 'meeting' ? '회의 전사 일시정지' : '개인 대화 전사 일시정지'}</p>}
+        {canInvite && recording && !status.paused && !status.micMuted && <p className="muted">{aiAvailable
           ? 'AI가 필요하면 “AI에게 질문”을 누르세요.'
-          : '녹음은 계속됩니다. AI 음성 질문에는 OpenAI API 키가 필요합니다.'}</p>}
+          : 'AI 음성 질문에는 OpenAI API 키가 필요합니다.'}</p>}
         {mode === 'followup' && !status.paused && <>
           {status.followupState === 'complete' ? <p className="muted" role="status">확인할 질문을 마쳤습니다. 녹음 종료를 눌러 저장하세요.</p>
             : status.followupState === 'judging' ? <p className="muted" role="status">방금 답변으로 확인할 내용이 충분한지 보고 있습니다.</p>
@@ -423,9 +437,14 @@ export function Voice({ session, status, mode, record, evidence, finish, busy, a
         </>}
         <div className="actions">
           {lost ? <button className="button quiet" disabled={busy} onClick={() => withAudio(session.reconnect)}>다시 연결</button>
-            : <button className="button quiet" disabled={busy || stopping || (!status.capturing && !status.paused)} onClick={() => status.paused ? withAudio(session.resume) : void session.pause()}>{status.paused ? '마이크 재개' : '마이크 일시정지'}</button>}
+            : <button className="button quiet" disabled={busy || stopping || (!status.capturing && !status.paused)}
+              onClick={() => status.paused ? withAudio(session.resume) : session.setMicMuted(!status.micMuted)}>{status.paused || status.micMuted ? '마이크 재개' : '마이크 중지'}</button>}
+          {canInvite && <button className="button quiet" disabled={busy || stopping || lost || !status.sonioxReady}
+            onClick={() => session.setTranscriptionPaused(!status.transcriptionPaused)}>{mode === 'meeting'
+              ? status.transcriptionPaused ? '회의재개' : '회의중지'
+              : status.transcriptionPaused ? '전사재개' : '전사중지'}</button>}
           {canInvite && <button className="button quiet" title={aiAvailable || aiInvited ? undefined : 'OpenAI 키가 필요합니다.'}
-            disabled={busy || stopping || status.paused || (!aiInvited && (!aiAvailable || !recording))}
+            disabled={busy || stopping || status.paused || (!aiInvited && (status.micMuted || !aiAvailable || !recording))}
             onClick={() => aiInvited ? session.leave() : withAudio(session.ask)}>{aiInvited ? 'AI 질문 닫기' : 'AI에게 질문'}</button>}
           {mode === 'followup' && <button className="button quiet" disabled={!status.capturing || !status.liveReady || stopping || status.followupState === 'complete'} onClick={session.skip}>다음 확인 사항</button>}
           <button className="button quiet" disabled={!status.playback || stopping} onClick={session.interrupt}>AI 음성 중지</button>
@@ -433,7 +452,7 @@ export function Voice({ session, status, mode, record, evidence, finish, busy, a
         </div>
       </div>
       <div className="audio-panels">
-        <AudioPanel kind="mic" title="마이크 입력" label={micStatus} drawing={status.capturing && !status.paused && !stopping} readMeter={readMeter} />
+        <AudioPanel kind="mic" title="마이크 입력" label={micStatus} drawing={status.capturing && !status.paused && !status.micMuted && !stopping} readMeter={readMeter} />
         <AudioPanel kind="speaker" title="AI 음성" label={aiStatus(status, mode, aiInvited)} drawing={status.playback && !status.paused && !stopping} readMeter={readMeter} />
       </div>
       {status.error && <p className="notice" role="alert">{status.error}</p>}
@@ -464,7 +483,7 @@ function answerLines(markdown: string, sources: ReadonlyMap<string, Evidence>, o
   return textLines(markdown, text => citationParts(text, sources).map((part, index) => {
     const evidence = part.reference && sources.get(part.reference);
     return evidence
-      ? <SourceLink key={index} item={evidence} open={open} className="citation">출처: {evidence.title}{evidence.timeMs !== undefined && ` · ${timeLabel(evidence.timeMs)}`}</SourceLink>
+      ? <SourceLink key={index} item={evidence} open={open} className="citation">{evidence.summaryOnly ? '요약에만 있는 내용' : '출처'}: {evidence.title}{evidence.timeMs !== undefined && ` · ${timeLabel(evidence.timeMs)}`}</SourceLink>
       : part.text;
   }));
 }
@@ -620,10 +639,11 @@ function SpeakerNames({record, busy, rename}: {record: RecordData; busy: boolean
 
 type NoteEdits = { title?: string; project?: string; allowInMeetings?: boolean; categoryPath?: string };
 
-export function Detail({ record, related, part, busy, open, back, summarize, followup, offerFollowup, followupIssue, consentAudio,
+export function Detail({ record, related, part, busy, open, back, summarize, correctTranscript, followup, offerFollowup, followupIssue, consentAudio,
   typedFollowup, typedAIAvailable, openTypedFollowup, closeTypedFollowup, loadTypedFollowup, saveTypedFollowup,
   dismissFollowup, keySettings, save, rename, remove }: {
-  record: RecordData; related: Evidence[]; part?: string; busy: boolean; open: Jump; back: () => void; summarize: () => void; followup: () => void;
+  record: RecordData; related: Evidence[]; part?: string; busy: boolean; open: Jump; back: () => void; summarize: () => void;
+  correctTranscript?: () => void; followup: () => void;
   offerFollowup: boolean; followupIssue?: string; consentAudio?: ConsentAudio; dismissFollowup: () => void; keySettings: () => void;
   typedFollowup: boolean; typedAIAvailable: boolean; openTypedFollowup(): void; closeTypedFollowup(): void;
   loadTypedFollowup(): Promise<RecordData | undefined>; saveTypedFollowup(pair: TypedPair): Promise<void>;
@@ -631,7 +651,7 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
 }) {
   const editBaseline = useRef(new Map<string, string | boolean>());
   useEffect(() => {
-    const target = part && document.getElementById(part);
+    const target = part && document.getElementById(summarySourceAnchor.test(part) ? 'summary' : part);
     if (target) {
       target.focus({ preventScroll: true });
       target.scrollIntoView({ block: 'center' });
@@ -655,6 +675,8 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
       {record.category && <p className="muted">분류: {record.category.join(' / ')}</p>}
       <div className="actions">
         <button className="button primary" disabled={busy || !record.turns.length} onClick={summarize}>{busy ? '처리 중…' : record.summary ? '요약 다시 만들기' : '요약 만들기'}</button>
+        {correctTranscript && <button className="button quiet" disabled={busy} onClick={correctTranscript}
+          aria-describedby="transcript-correction-help">전사 보정</button>}
         {!offerFollowup && !typedFollowup && record.kind === 'meeting' && !record.originalFilename && !!original.length && <>
           <button className="button quiet" disabled={busy} onClick={followup}>보충 질문하기</button>
           <button className="button quiet" disabled={busy} onClick={openTypedFollowup}>글로 보충하기</button>
@@ -662,6 +684,7 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
         <button className="button quiet" onClick={() => exportRecord(record)}><Icon name="download" /> Markdown 내보내기</button>
         {record.originalFilename && !part && <OriginalFile id={record.id} />}
       </div>
+      {correctTranscript && <p className="muted" id="transcript-correction-help">전사 보정을 누르면 이 기록의 발언을 OpenAI에 보냅니다. 보정 전 원문은 그대로 보관합니다.</p>}
     </div>
     {offerFollowup && <FollowupInvitation issue={followupIssue} prepared={consentAudio} accept={followup} typeAnswer={openTypedFollowup}
       dismiss={dismissFollowup} keySettings={keySettings} />}
@@ -669,6 +692,7 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
       busy={busy} load={loadTypedFollowup} save={saveTypedFollowup} close={closeTypedFollowup} />}
     <section id="summary" className="summary" tabIndex={-1}>
       <h2>요약</h2>
+      {part && summarySourceEvidence(record,part) && <p className="notice">요약에만 있는 내용 · 원문에서 확인되지 않았습니다.</p>}
       {summary.length ? summary : <p className="muted">아직 요약이 없습니다.</p>}
       {!!record.questions?.length && <><h3>확인할 사항</h3><ul>{record.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></>}
     </section>
@@ -704,9 +728,9 @@ export function Detail({ record, related, part, busy, open, back, summarize, fol
     </details>
     <SpeakerNames record={record} busy={busy} rename={rename} />
     <h2>{record.originalFilename ? `문서 본문 · ${record.originalFilename}` : `원문 · ${original.length}개 발언`}</h2>
-    {original.length ? <Transcript turns={original} record={record} afterTurn={turn => record.originalFilename && turn.id === part
+    {original.length ? <Transcript turns={original} record={record} originalAt={part} afterTurn={turn => record.originalFilename && turn.id === part
       ? <OriginalFile id={record.id} /> : answerSources(turn)} /> : <div className="empty">아직 전사된 발언이 없습니다.</div>}
-    {!!supplemental.length && <><h2>회의 후 보충 질문 · {supplemental.length}개 발언</h2><Transcript turns={supplemental} record={record} afterTurn={answerSources} /></>}
+    {!!supplemental.length && <><h2>회의 후 보충 질문 · {supplemental.length}개 발언</h2><Transcript turns={supplemental} record={record} originalAt={part} afterTurn={answerSources} /></>}
   </section>;
 }
 
@@ -719,7 +743,9 @@ export function Search({ records, online, ask, open }: {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const found = submitted ? searchRecords(records, submitted, undefined, { library: true }) : [];
-  const sources = new Map(reply?.evidence.filter(item => records.some(record => record.id === item.recordId && record.turns.some(turn => turn.id === item.turnId))).map(item => [item.reference, item]));
+  const sources = new Map(reply?.evidence.filter(item => records.some(record => record.id === item.recordId &&
+    (item.summaryOnly ? !!item.targetId && !!summarySourceEvidence(record,item.targetId) : record.turns.some(turn => turn.id === item.turnId))))
+    .map(item => [item.reference, item]));
   return <section className="page-stack">
     <div className="page-heading"><h1>기록 검색</h1><p className="muted">제목, 분류, 발언, 회의 요약을 이 브라우저에서 찾습니다.</p></div>
     <form className="inline" onSubmit={event => { event.preventDefault(); setSubmitted(query.trim()); setReply(undefined); setError(''); }}>
@@ -734,7 +760,9 @@ export function Search({ records, online, ask, open }: {
         .finally(() => setBusy(false));
     }}>{busy ? '답변 만드는 중…' : '이 기록에 AI로 질문'}</button></div>}
     {error && <p className="notice" role="alert">{error}</p>}
-    {reply && <div className="summary"><h2>AI 답변</h2>{answerLines(reply.answer, sources, open)}</div>}
+    {reply && <div className="summary"><h2>AI 답변</h2>{answerLines(reply.answer, sources, open)}
+      {[...sources.values()].some(item => item.summaryOnly) && <SavedSources sources={[...sources.values()].filter(item => item.summaryOnly)} open={open}/>}
+    </div>}
     {submitted && !found.length && <div className="empty">일치하는 기록이 없습니다.</div>}
     <ul className="records">{found.map(item => <li key={item.reference}>
       <button className="record-row" onClick={() => open(item.recordId, item.turnId ?? 'summary')}>

@@ -9,6 +9,7 @@ private var hostSeconds: Double { AVAudioTime.seconds(forHostTime: mach_absolute
 final class PlaybackGate {
   private let lock = NSLock()
   private var until = 0.0
+  private var manualMute = false
 
   func set(_ until: Double) {
     lock.lock()
@@ -20,6 +21,18 @@ final class PlaybackGate {
     lock.lock()
     defer { lock.unlock() }
     return hostSeconds < until
+  }
+
+  func setMicMuted(_ muted: Bool) {
+    lock.lock()
+    manualMute = muted
+    lock.unlock()
+  }
+
+  var micMuted: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return manualMute
   }
 }
 
@@ -50,6 +63,7 @@ public final class SiteAudioModule: Module {
       if self.requestId == id { self.stop() }
     }.runOnQueue(.main)
     AsyncFunction("stopCapture") { self.stop() }.runOnQueue(.main)
+    Function("setMicMuted") { (muted: Bool) in self.gate.setMicMuted(muted) }
     AsyncFunction("play") { (audio: String) in try self.enqueue(audio) }.runOnQueue(.main)
     AsyncFunction("stopPlayback") { self.stopOutput() }.runOnQueue(.main)
     AsyncFunction("playPreview") { (wave: ExpoModulesCore.ArrayBuffer, promise: Promise) in
@@ -172,7 +186,8 @@ public final class SiteAudioModule: Module {
   }
 
   private func capture(_ input: AVAudioPCMBuffer, using converter: AVAudioConverter, format: AVAudioFormat, token: Int, end: Double?) {
-    let suppressed = gate.suppresses
+    let manualMute = gate.micMuted
+    let suppressed = manualMute || gate.suppresses
     let count = AVAudioFrameCount(ceil(Double(input.frameLength) * rate / input.format.sampleRate)) + 8
     guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count) else { return }
     var passed = false
@@ -185,18 +200,20 @@ public final class SiteAudioModule: Module {
     guard status != .error, output.frameLength > 0, let samples = output.int16ChannelData?[0] else { return }
     let size = Int(output.frameLength) * MemoryLayout<Int16>.size
     let data = suppressed ? Data(count: size) : Data(bytes: samples, count: size)
-    let candidate = suppressed && end != nil ? Data(bytes: samples, count: size) : nil
+    let candidate = suppressed && !manualMute && end != nil ? Data(bytes: samples, count: size) : nil
     DispatchQueue.main.async { [weak self] in
       guard let self, self.running, self.generation == token else { return }
-      do { try self.archive?.append(data) }
+      let muted = self.gate.micMuted
+      let safe = muted ? Data(count: size) : data
+      do { try self.archive?.append(safe) }
       catch {
         try? self.archive?.finish()
         self.archive = nil
         self.archiveError(error)
       }
-      var event: [String: Any] = ["audio": data.base64EncodedString(), "suppressed": suppressed]
+      var event: [String: Any] = ["audio": safe.base64EncodedString(), "suppressed": suppressed || muted]
       if let end { event["end"] = end }
-      if let candidate { event["candidate"] = candidate.base64EncodedString() }
+      if !muted, let candidate { event["candidate"] = candidate.base64EncodedString() }
       self.sendEvent("onAudio", event)
     }
   }

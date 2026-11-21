@@ -36,7 +36,8 @@ test('native overlap mutes delayed reference echo, then sends sustained new spee
   // iOS often delivers variable frame sizes which still must preserve byte order and media time.
   assert.deepEqual(route(2_880, 715, voice), []);
   assert.deepEqual(route(3_595, 685, voice), []);
-  assert.deepEqual(route(4_280, 1_000, voice), Array.from({length:5}, (_, j) => ({
+  assert.deepEqual(route(4_280, 1_000, voice), []);
+  assert.deepEqual(route(5_280, 1_440, voice), Array.from({length:8}, (_, j) => ({
     audio:pcm(2_880 + j * 480, 480, voice), ...(j === 0 ? {bargeIn:true} : {}),
   })));
 });

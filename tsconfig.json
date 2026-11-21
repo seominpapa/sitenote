@@ -6,5 +6,5 @@
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "exclude": ["node_modules", "server", "ios", "android", "dist"]
+  "exclude": ["node_modules", "server", "ios", "android", "dist", "desktop/document-converter.bundle.cjs"]
 }

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { EventEmitter, once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
+import { ordinaryQuestionPlan } from './voice-plan.mjs';
 
 const firstTurn = '다음 현장 점검은 금요일입니다.';
 const lastTurn = '안전 점검표도 가져오세요.';
@@ -105,6 +106,7 @@ test('answers only finalized meeting questions, then advances followup after a c
   let answerFrames = 0;
   let judgedComplete = false;
   const server = createApp({
+    planQuestion: ordinaryQuestionPlan,
     webRoot: process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
     accessToken: 'test-only-not-a-real-access-token',
     openaiKey: 'test-only', sonioxKey: 'test-only',
@@ -410,8 +412,9 @@ test('answers only finalized meeting questions, then advances followup after a c
   }
 });
 
-for (const viewport of [{width:1280,height:720}, {width:375,height:667}]) {
-  test('keeps recording controls and latest transcript in view at ' + viewport.width, async ({page}) => {
+for (const {width,height,mode} of [{width:1280,height:720,mode:'회의'}, {width:375,height:667,mode:'회의'},
+  {width:375,height:667,mode:'개인 대화'}]) {
+  test(`${mode} keeps independent transcription controls and latest text in view at ${width}`, async ({page}) => {
     let emit;
     const server = createApp({
       webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
@@ -421,13 +424,23 @@ for (const viewport of [{width:1280,height:720}, {width:375,height:667}]) {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     try {
-      await page.setViewportSize(viewport);
+      await page.setViewportSize({width,height});
       await page.goto('http://127.0.0.1:' + server.address().port);
-      await page.getByLabel('회의 제목', {exact:true}).fill('스크롤 테스트');
-      await page.getByRole('button', {name:'회의 시작'}).click();
-      await expect(page.getByTestId('voice-status')).toContainText('회의 전사 중');
+      await page.getByLabel(`${mode} 제목`, {exact:true}).fill('스크롤 테스트');
+      await page.getByRole('button', {name:`${mode} 시작`}).click();
+      await expect(page.getByTestId('voice-status')).toContainText(`${mode} 전사 중`);
       const controls = page.getByRole('button', {name:'녹음 종료'});
-      await expect(page.getByRole('button', {name:'마이크 일시정지'})).toBeEnabled();
+      const prefix = mode === '회의' ? '회의' : '전사';
+      await page.getByRole('button', {name:`${prefix}중지`, exact:true}).click();
+      await expect(page.getByTestId('voice-status')).toContainText(`${mode} 전사 일시정지`);
+      const muteMic = page.getByRole('button', {name:'마이크 중지', exact:true});
+      await muteMic.click();
+      const resumeTranscription = page.getByRole('button', {name:`${prefix}재개`, exact:true});
+      await expect(resumeTranscription).toBeEnabled();
+      await page.getByRole('button', {name:'마이크 재개', exact:true}).click();
+      await expect(page.getByTestId('voice-status')).toContainText(`${mode} 전사 일시정지`);
+      await resumeTranscription.click();
+      await expect(page.getByTestId('voice-status')).toContainText(`${mode} 전사 중`);
       await page.evaluate(() => document.fonts.ready);
       const initial = await controls.boundingBox();
       for (let i = 0; i < 32; i++) emit({tokens:[sonioxTurn('발언 ' + i, '1', i * 100), endpoint]});
@@ -456,6 +469,7 @@ test('spoken 아니오 dismisses the invitation without opening an AI session or
   const server = createApp({
     webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
     accessToken:'fixture-access-token-not-a-real-key', sonioxKey:'fixture-soniox', openaiKey:'fixture-ai',
+    planQuestion: ordinaryQuestionPlan,
     transport:async () => Response.json({status:'completed',output:[{type:'message',content:[
       {type:'output_text',text:JSON.stringify({markdown:'회의 요약',questions:[]})},
     ]}]}),

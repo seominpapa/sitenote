@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { EventEmitter, once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
+import { ordinaryQuestionPlan } from './voice-plan.mjs';
 
 const first = '첫 번째 안내를 부탁합니다.';
 const barge = '잠깐만요, 바뀐 날짜를 알려 주세요.';
@@ -25,6 +26,7 @@ for (const { kind, label, completeOnServer } of [
     let aiConnections = 0;
     let previousReplyClosed = false;
     const server = createApp({
+      planQuestion: ordinaryQuestionPlan,
       webRoot: process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
       accessToken: 'test-only-not-a-real-access-token',
       openaiKey: 'test-only',

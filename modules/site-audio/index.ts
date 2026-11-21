@@ -14,6 +14,7 @@ declare class NativeSiteAudio extends NativeModule<EventListeners<Events>> {
   startCapture(archiveUri: string | null, captureId: number, bargeIn: boolean): Promise<void>;
   cancelCaptureStart(captureId: number): Promise<void>;
   stopCapture(): Promise<void>;
+  setMicMuted(muted: boolean): void;
   play(audio: string): Promise<void>;
   stopPlayback(): Promise<void>;
   playPreview(wave: ArrayBuffer): Promise<void>;
@@ -21,8 +22,9 @@ declare class NativeSiteAudio extends NativeModule<EventListeners<Events>> {
   writeTextAtomic(uri: string, text: string): Promise<void>;
   pickNoteFolder(): Promise<{uri: string; label: string} | null>;
   pickNoteDocument(): Promise<{filename: string; cachePath: string} | null>;
-  writeNoteFile(folderUri: string, id: string, name: string, localPath: string, archive: boolean): Promise<{uri: string}>;
-  openNoteFile(folderUri: string, id: string, name: string, archive: boolean): Promise<void>;
+  publishNoteFiles(folderUri: string, id: string, name: string, transcript: string, summary: string | null, imported: boolean): Promise<void>;
+  openOriginalNote(uri: string, id: string, name: string): Promise<void>;
+  openLegacyNote(folderUri: string, id: string, name: string): Promise<void>;
   deleteNoteFiles(folderUri: string, id: string): Promise<void>;
 }
 declare class NativeVoiceEvents extends NativeModule<EventListeners<{
@@ -75,6 +77,7 @@ export default {
     }
   },
   stopCapture: () => native.stopCapture(),
+  setMicMuted: (muted: boolean) => native.setMicMuted(muted),
   play: (audio: string) => native.play(audio),
   stopPlayback: () => native.stopPlayback(),
   playPreview: (wave: ArrayBuffer) => native.playPreview(wave),
@@ -82,9 +85,9 @@ export default {
   writeTextAtomic: (uri: string, text: string) => native.writeTextAtomic(uri, text),
   pickNoteFolder: () => native.pickNoteFolder(),
   pickNoteDocument: () => native.pickNoteDocument(),
-  writeNoteFile: (folderUri: string, id: string, name: string, localPath: string, archive = false) =>
-    native.writeNoteFile(folderUri, id, name, localPath, archive),
-  openNoteFile: (folderUri: string, id: string, name: string, archive = false) =>
-    native.openNoteFile(folderUri, id, name, archive),
+  publishNoteFiles: (folderUri: string, id: string, name: string, transcript: string, summary: string | null, imported: boolean) =>
+    native.publishNoteFiles(folderUri, id, name, transcript, summary, imported),
+  openOriginalNote: (uri: string, id: string, name: string) => native.openOriginalNote(uri, id, name),
+  openLegacyNote: (folderUri: string, id: string, name: string) => native.openLegacyNote(folderUri, id, name),
   deleteNoteFiles: (folderUri: string, id: string) => native.deleteNoteFiles(folderUri, id),
 };

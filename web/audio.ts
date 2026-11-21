@@ -50,6 +50,7 @@ export function createWebAudio(options: {bargeIn?: boolean; recoverTail?: boolea
   let outputEnds = 0;
   let quietSamples = 0;
   let closed = false;
+  let micMuted = false;
 
   async function unlock(): Promise<void> {
     if (closed) throw Error('종료한 음성 세션입니다.');
@@ -78,9 +79,9 @@ export function createWebAudio(options: {bargeIn?: boolean; recoverTail?: boolea
     const begin = data.end - frameTime;
     const overlaps = (guard: number) => played.some(({start, end}) => data.end > start && begin < end + guard);
     const guarded = overlaps(echoTail);
-    let captureMode: boolean | 'tail' | 'mute' = guarded;
-    if (guarded && !options.bargeIn) captureMode = options.recoverTail && !overlaps(0) ? 'tail' : 'mute';
-    for (const frame of detector?.read(data, captureMode) ?? [{pcm:data.pcm,suppressed:guarded}]) {
+    let captureMode: boolean | 'tail' | 'mute' = micMuted ? 'mute' : guarded;
+    if (!micMuted && guarded && !options.bargeIn) captureMode = options.recoverTail && !overlaps(0) ? 'tail' : 'mute';
+    for (const frame of detector?.read(data, captureMode) ?? [{pcm:data.pcm,suppressed:micMuted || guarded}]) {
       const audio = frame.suppressed ? silent : btoa(String.fromCharCode(...new Uint8Array(frame.pcm)));
       emit('onAudio', {audio, suppressed:frame.suppressed, ...('bargeIn' in frame ? {bargeIn:frame.bargeIn} : {})});
     }
@@ -114,6 +115,7 @@ export function createWebAudio(options: {bargeIn?: boolean; recoverTail?: boolea
       };
       worklet.onprocessorerror = () => lostCapture('마이크 음성 처리가 중단되었습니다.');
       for (const track of stream.getAudioTracks()) {
+        track.enabled = !micMuted;
         track.addEventListener('ended', () => lostCapture('마이크 연결이 끊겼습니다.'), {once: true});
       }
       worklet.port.onmessage = ({data}: MessageEvent<MicFrame>) => {
@@ -237,6 +239,10 @@ export function createWebAudio(options: {bargeIn?: boolean; recoverTail?: boolea
 
   return {
     unlock, startCapture, stopCapture, play, stopPlayback, readMeter,
+    setMicMuted(muted: boolean) {
+      micMuted = muted;
+      capture?.stream.getAudioTracks().forEach(track => { track.enabled = !muted; });
+    },
     addListener<K extends keyof AudioEvents>(name: K, listener: (event: AudioEvents[K]) => void) {
       listeners[name].add(listener);
       return {remove: () => { listeners[name].delete(listener); }};

@@ -507,6 +507,7 @@ test('discussion sends only finalized, post-arm Soniox questions, with a fresh p
   endpoint(son);
   await nextTick();
   assert.deepEqual(searches().map(({query}) => query), ['변경된 납기는 언제인가요?']);
+  assert.equal(app.providers.length,1,'do not connect GPT Live before search returns');
   const anotherRef = '[record:c7595458-b44b-4a22-a2f8-187ee2709c3d#18]';
   const metadata = JSON.stringify({role:'user', title: '긴 제목'.repeat(40), date: '2026-11-20T00:00:00Z', excerpt: '원문 앞부분 '.repeat(25) + '5월 12일 최종'});
   const filtered = [
@@ -521,10 +522,10 @@ test('discussion sends only finalized, post-arm Soniox questions, with a fresh p
   send({type:'search_result', id:searches()[0].id, context:filtered});
   await nextTick();
   const liveProvider = app.providers[1];
-  assert.equal(liveProvider.url, 'wss://api.openai.com/v1/live/sessions');
-  assert.equal(liveProvider.opts.headers.Authorization, 'Bearer mock-openai');
   const {ws: live} = liveProvider;
   live.open();
+  assert.equal(liveProvider.url, 'wss://api.openai.com/v1/live/sessions');
+  assert.equal(liveProvider.opts.headers.Authorization, 'Bearer mock-openai');
   assert.equal(inputQuestion(questionConfig(live)), '변경된 납기는 언제인가요?');
   assert.deepEqual(messages.find(message => message.type === 'evidence').refs, [ref, anotherRef]);
   const firstResponse = questionConfig(live);
@@ -603,6 +604,24 @@ test('ordinary voice separates provided excerpts from verified literal quotation
   assert.ok(jsonMessages(client, 'live').every(item => JSON.stringify(item.refs) === JSON.stringify([first, second])));
 });
 
+test('current meeting history replaces the invitation snapshot without becoming a past note citation', async (t) => {
+  const {client,son,voice} = setupOrdinaryAudio(t);
+  event(client,'ask',{timeMs:0,context:'최근 회의 마무리 발언'});
+  await Promise.resolve();
+  speech(son,'초반에 무슨 이야기했지?',20,80);
+  endpoint(son);
+  const [search] = jsonMessages(client,'search');
+  assert.equal(search.questionStart,20);
+  event(client,'search_context',{id:search.id,currentContext:'00:00:10 첫 안건은 배관 점검입니다.'});
+  event(client,'search_result',{id:search.id,context:''});
+  const live = voice();
+  live.open();
+  const evidence = inputEvidence(questionConfig(live));
+  assert.match(evidence,/00:00:10 첫 안건은 배관 점검입니다/u);
+  assert.doesNotMatch(evidence,/최근 회의 마무리 발언/u);
+  assert.deepEqual(jsonMessages(client,'evidence')[0].refs,[]);
+});
+
 test('ordinary voice omits evidence that cannot be sent intact within the GPT-Live prompt budget', async (t) => {
   const { client, son, voice } = setupOrdinaryAudio(t);
   event(client, 'ask', { timeMs: 0, context: '최근 맥락 '.repeat(500) });
@@ -648,11 +667,445 @@ test('ordinary invitation retains a finalized question before app readiness and 
   const responseOrder=client.messages.map(raw=>JSON.parse(raw))
     .filter(item=>item.type==='search' || (item.type==='ready' && item.scope==='live') || item.state==='processing');
   assert.deepEqual(responseOrder.map(item=>item.state ?? item.type), ['ready','processing','search']);
+  assert.equal(voice(),undefined,'wait for evidence before opening the socket');
   event(client,'search_result',{id:queries[0].id,context:''});
   const live=voice();
   assert.deepEqual(jsonMessages(live, 'session.start'), []);
   live.open();
   assert.equal(inputQuestion(questionConfig(live)), '어디에서 만나요?');
+});
+
+test('does not connect GPT Live before evidence is ready and ignores abandoned or late searches', async (t) => {
+  const {client,son,voice}=setupOrdinaryAudio(t);
+  async function ask(text) {
+    event(client,'ask',{timeMs:0});
+    await Promise.resolve();
+    speech(son,text,0,80);
+    endpoint(son);
+    return jsonMessages(client,'search').at(-1);
+  }
+  const stale = await ask('보내지 않을 질문');
+  assert.equal(voice(),undefined);
+  event(client,'leave');
+  event(client,'search_result',{id:stale.id,context});
+  t.mock.timers.tick(800);
+  assert.equal(voice(),undefined);
+
+  const pending = await ask('늦게 검색되는 질문');
+  event(client,'search_context',{id:stale.id,currentContext:'이전 요청의 맥락'});
+  event(client,'search_context',{id:pending.id,currentContext:'현재 회의 초반 발언의 근거'});
+  t.mock.timers.tick(799);
+  assert.equal(voice(),undefined);
+  t.mock.timers.tick(1);
+  const live = voice();
+  live.open();
+  event(client,'search_result',{id:pending.id,context});
+  assert.equal(jsonMessages(live,'session.start').length,1);
+  assert.equal(inputQuestion(questionConfig(live)),'늦게 검색되는 질문');
+  assert.match(inputEvidence(questionConfig(live)),/현재 회의 초반 발언의 근거/u);
+  assert.doesNotMatch(inputEvidence(questionConfig(live)),/이전 요청의 맥락/u);
+  assert.deepEqual(jsonMessages(client,'evidence').at(-1).refs,[]);
+});
+
+test('a saved meeting question cannot borrow current meeting speech or prior AI answers', async t => {
+  const {client,son,voice} = setupOrdinaryAudio(t);
+  event(client,'ask',{timeMs:0,context:'현재 회의는 선택하면 안 됩니다.'});
+  await Promise.resolve();
+  speech(son,'오늘 몇 시에 시작하지?',0,80);
+  endpoint(son);
+  let [{id}] = jsonMessages(client,'search');
+  event(client,'search_result',{id,context:''});
+  let live = voice();
+  live.open();
+  reply(live,'initial','현재 회의에서 정오에 시작했습니다.');
+  finishReply(t,live);
+  event(client,'question_ready');
+  speech(son,'최근에 한 회의 내용이 뭐였지?',0,80);
+  endpoint(son);
+  ({id} = jsonMessages(client,'search').at(-1));
+  event(client,'search_context',{id,scope:'saved',currentContext:'현재 원문을 외부 기록에 섞지 마세요.'});
+  event(client,'search_result',{id,context:''});
+  live = voice();
+  live.open();
+  const config = questionConfig(live);
+  assert.match(JSON.stringify(config),/저장된 회의 근거.*찾지 못했습니다/u);
+  assert.doesNotMatch(JSON.stringify(config),/오늘 몇 시에|정오에 시작|선택하면 안|현재 원문을 외부/u);
+  assert.deepEqual(jsonMessages(client,'evidence').at(-1).refs,[]);
+});
+
+test('the planning model interprets final Soniox text before the server requests any saved-note search', async t => {
+  const calls = [];
+  const plan = {scope:'related',range:'overview',terms:'교량 반입 절차',sameProject:true};
+  const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+    async transport(_url,{body}) {
+      const request = JSON.parse(body);
+      calls.push(request);
+      return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(plan)}]}]});
+    },
+  });
+  assert.equal(jsonMessages(client,'ready').find(item => item.scope === 'meeting')?.plansSearch,true);
+  event(client,'ask',{timeMs:0,context:'현재 회의 비공개 원문',planSearch:true,meeting:{title:'교량 반입 회의',project:'현장 A'}});
+  await Promise.resolve();
+  speech(son,'이 주제를 전에도 말했는가요',0,80,false);
+  assert.equal(calls.length,0);
+  speech(son,'그 얘기는 전에 다른 자리에서 어떻게 했더라?',0,80);
+  endpoint(son);
+  assert.deepEqual(jsonMessages(client,'search'),[]);
+  await nextTick();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].store,false);
+  assert.equal(calls[0].text.format.name,'meeting_voice_search_plan');
+  assert.deepEqual(JSON.parse(calls[0].input),{mode:'meeting',question:'그 얘기는 전에 다른 자리에서 어떻게 했더라?',
+    recentQuestions:[],meeting:{title:'교량 반입 회의',project:'현장 A'}});
+  assert.doesNotMatch(calls[0].input,/비공개 원문/u);
+  const [search] = jsonMessages(client,'search');
+  assert.deepEqual(search.plan,plan);
+  event(client,'search_context',{id:search.id,scope:'current',currentContext:'현재 원문이어야 한다'});
+  event(client,'search_result',{id:search.id,context});
+  const live = voice();
+  live.open();
+  const evidence = inputEvidence(questionConfig(live));
+  assert.match(evidence,/납기 5월 10일/u);
+  assert.doesNotMatch(evidence,/현재 원문이어야 한다|비공개 원문/u);
+});
+
+test('the planner corrects a confirmed question with earlier speech without changing saved Soniox tokens', async t => {
+  const calls = [];
+  const original = '벤토 나이트 반입 일정은 언제였지?';
+  const corrected = '벤토나이트 반입 일정은 언제였지?';
+  const plan = {scope:'related',range:'topic',terms:'벤토나이트 반입 일정',sameProject:false};
+  const {client,son,voice,pcm} = setupOrdinaryAudio(t,'meeting',{
+    async transport(_url,{body}) {
+      calls.push(JSON.parse(body));
+      return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',
+        text:JSON.stringify({...plan,correctedQuestion:corrected})}]}]});
+    },
+  });
+  pcm(5);
+  speech(son,'벤토나이트 입고와 보관을 논의 중입니다.',0,80);
+  speech(son,'확정되지 않은 후보',81,90,false);
+  event(client,'ask',{timeMs:100,planSearch:true,meeting:{title:'현장 자재 회의'}});
+  await Promise.resolve();
+  speech(son,'.',100,105);
+  endpoint(son);
+  assert.equal(calls.length,0);
+  speech(son,original,120,200);
+  speech(son,'뒤에 나온 발언',205,250,false);
+  endpoint(son);
+  await nextTick();
+  assert.equal(calls.length,1);
+  assert.ok(calls[0].text.format.schema.required.includes('correctedQuestion'));
+  assert.equal(JSON.parse(calls[0].input).recentSpeech,'벤토나이트 입고와 보관을 논의 중입니다.');
+  assert.doesNotMatch(calls[0].input,/확정되지 않은 후보|뒤에 나온 발언/u);
+  const [search] = jsonMessages(client,'search');
+  assert.equal(search.query,corrected);
+  assert.equal(search.questionStart,120);
+  assert.deepEqual(search.plan,plan);
+  assert.ok(jsonMessages(client,'soniox').flatMap(item => item.tokens).some(token => token.text === original));
+  event(client,'search_result',{id:search.id,context});
+  const live = voice();
+  live.open();
+  assert.equal(inputQuestion(questionConfig(live)),corrected);
+});
+
+test('a correction cannot change a number or negation and then route a search based on it', async t => {
+  for (const [raw,corrected] of [['반입량이 30톤인가요?', '반입량이 50톤인가요?'],
+    ['반입하지 않나요?', '반입하나요?']]) {
+    await t.test(raw, async t => {
+      const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+        async planQuestion() {
+          return {scope:'related',range:'topic',terms:'반입',sameProject:false,correctedQuestion:corrected};
+        },
+      });
+      event(client,'ask',{timeMs:0,planSearch:true});
+      await Promise.resolve();
+      speech(son,raw,0,80);
+      endpoint(son);
+      await nextTick();
+      assert.deepEqual(jsonMessages(client,'search'),[]);
+      const live = voice();
+      live.open();
+      assert.equal(inputQuestion(questionConfig(live)),raw);
+    });
+  }
+});
+
+test('an invalid or timed-out LLM plan asks which meeting scope and never searches by keywords', async t => {
+  for (const failure of ['invalid','timeout']) await t.test(failure, async t => {
+    let signal;
+    let finish;
+    const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+      planQuestion(_input,options) {
+        signal = options.signal;
+        return new Promise(resolve => { finish = resolve; });
+      },
+    });
+    event(client,'ask',{timeMs:0,context:'이 발언은 전송하지 마세요',planSearch:true});
+    await Promise.resolve();
+    speech(son,'최근에 한 회의 내용이 뭐였지?',0,80);
+    endpoint(son);
+    if (failure === 'invalid') {
+      finish({scope:'latest',range:'bad',terms:'',sameProject:false});
+      await nextTick();
+    } else {
+      t.mock.timers.tick(4_500);
+      assert.ok(signal.aborted);
+      finish({scope:'latest',range:'opening',terms:'',sameProject:false});
+      await nextTick();
+    }
+    assert.deepEqual(jsonMessages(client,'search'),[]);
+    const live = voice();
+    live.open();
+    assert.match(JSON.stringify(questionConfig(live)),/어느 회의 기록/u);
+    assert.doesNotMatch(JSON.stringify(questionConfig(live)),/이 발언은 전송하지 마세요/u);
+    assert.deepEqual(jsonMessages(client,'evidence').at(-1).refs,[]);
+  });
+});
+
+test('the planner remembers the previous user question but not its AI answer when the user resolves scope', async t => {
+  const inputs = [];
+  const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+    async planQuestion(input) {
+      inputs.push(input);
+      return inputs.length === 1 ? {scope:'clarify',range:'overview',terms:'',sameProject:false}
+        : {scope:'current',range:'topic',terms:'출입 등록',sameProject:false};
+    },
+  });
+  event(client,'ask',{timeMs:0,planSearch:true,meeting:{title:'입장 안내'}});
+  await Promise.resolve();
+  speech(son,'전에 출입 등록 어떻게 하자고 했지?',0,80);
+  endpoint(son);
+  await nextTick();
+  const first = voice();
+  first.open();
+  reply(first,'clarification','어느 회의 기록을 말씀하시는 건가요?');
+  finishReply(t,first);
+  event(client,'question_ready');
+  speech(son,'지금 회의',0,80);
+  endpoint(son);
+  await nextTick();
+  assert.deepEqual(inputs[1].recentQuestions,['전에 출입 등록 어떻게 하자고 했지?']);
+  const [{id,plan}] = jsonMessages(client,'search');
+  assert.equal(plan.scope,'current');
+  event(client,'search_context',{id,currentContext:'입구에 이름을 쓰기로 했습니다.'});
+  event(client,'search_result',{id,context});
+  const current = voice();
+  current.open();
+  const config = questionConfig(current);
+  assert.match(inputEvidence(config),/입구에 이름을 쓰기로|출입 등록/u);
+  assert.doesNotMatch(inputEvidence(config),/납기 5월 10일/u);
+  assert.equal(config.input.some(item => item.role === 'assistant'),false);
+});
+
+test('leaving cancels the question planner and never emits a late search request', async t => {
+  let signal;
+  let resolvePlan;
+  const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+    planQuestion(_input,controls) {
+      signal = controls.signal;
+      return new Promise(resolve => { resolvePlan = resolve; });
+    },
+  });
+  event(client,'ask',{timeMs:0,planSearch:true});
+  await Promise.resolve();
+  speech(son,'저번 회의는 어땠죠?',0,80);
+  endpoint(son);
+  event(client,'leave');
+  assert.equal(signal.aborted,true);
+  resolvePlan({scope:'latest',range:'overview',terms:'',sameProject:false});
+  t.mock.timers.tick(20_000);
+  await nextTick();
+  assert.equal(voice(),undefined);
+  assert.deepEqual(jsonMessages(client,'search'),[]);
+});
+
+test('a long current meeting recap reads chronological sections before GPT Live and blocks prior notes', async t => {
+  const calls = [];
+  const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+    async transport(_url,{body}) {
+      const {input,store} = JSON.parse(body);
+      assert.equal(store,false);
+      const data = JSON.parse(input);
+      calls.push(data);
+      const text = data.transcript ? '구간 요약: '+ data.transcript.match(/일자별 안건\d+/gu).join(', ') : '00:00 첫 안건, 01:00 중간 변경, 02:00 마지막 결정';
+      return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text}]}]});
+    },
+  });
+  event(client,'ask',{timeMs:0,context:'오래된 지난 답변'});
+  await Promise.resolve();
+  speech(son,'지금까지 이 회의 뭐 했어?',0,80);
+  endpoint(son);
+  const [{id}] = jsonMessages(client,'search');
+  event(client,'search_context',{id,scope:'current',currentContext:'현재 발언 미리보기'});
+  for (let i = 0; i < 5; i++) event(client,'search_history',{id,text:'일자별 안건'+ i + '상세 기록 '.repeat(2_000)});
+  assert.equal(calls.length,0,'do not submit sections until search result arrives');
+  event(client,'search_result',{id,context});
+  await nextTick();
+  assert.deepEqual(calls.slice(0,-1).flatMap(call => call.transcript.match(/일자별 안건\d+/gu)),[
+    '일자별 안건0','일자별 안건1','일자별 안건2','일자별 안건3','일자별 안건4',
+  ]);
+  assert.ok(calls.at(-1).sections.every(section => section.includes('구간 요약')));
+  const live = voice();
+  live.open();
+  const cue = inputEvidence(questionConfig(live));
+  assert.match(cue,/첫 안건.*중간 변경.*마지막 결정/u);
+  assert.doesNotMatch(cue,/오래된 지난 답변|현재 발언 미리보기|납기 5월 10일/u);
+  assert.deepEqual(jsonMessages(client,'evidence').at(-1).refs,[]);
+});
+
+test('current topic and opening requests can read bounded history without falling back to saved notes', async t => {
+  for (const range of ['topic','opening','prior-question','general']) await t.test(range, async t => {
+    const calls = [];
+    const plan = {scope:range === 'general' ? 'general' : 'current',range:range === 'general' ? 'topic' : range,
+      terms:range === 'topic' ? '교량 통행 재개 조건' : '',sameProject:false};
+    const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+      async planQuestion() { return plan; },
+      async transport(_url,{body}) {
+        const {input,instructions} = JSON.parse(body);
+        const data = JSON.parse(input);
+        calls.push({data,instructions});
+        const text = data.transcript || '계측값이 안정되면 통행을 다시 열기로 했습니다.';
+        return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text}]}]});
+      },
+    });
+    event(client,'ask',{timeMs:0,planSearch:true});
+    await Promise.resolve();
+    speech(son,'아까 그건 언제 가능하다고 했죠?',0,80);
+    endpoint(son);
+    await nextTick();
+    const [{id}] = jsonMessages(client,'search');
+    event(client,'search_context',{id,scope:'current',currentContext:'시간대별 일부 발언'});
+    event(client,'search_history',{id,text:'00:00:13 계측이 안정된 뒤에만 다시 열 수 있습니다.'});
+    event(client,'search_history',{id,text:'00:03:45 기상 상황은 내일 다시 확인합니다.'});
+    event(client,'search_result',{id,context:context});
+    await nextTick();
+    const live = voice();
+    live.open();
+    const cue = inputEvidence(questionConfig(live));
+    if (range === 'topic' || range === 'opening') {
+      assert.equal(calls.length,3);
+      assert.deepEqual(calls.at(-1).data.sections,[
+        '00:00:13 계측이 안정된 뒤에만 다시 열 수 있습니다.','00:03:45 기상 상황은 내일 다시 확인합니다.',
+      ]);
+      assert.match(cue,/계측값이 안정되면 통행을 다시 열기/u);
+      assert.doesNotMatch(cue,/납기 5월 10일/u);
+      if (range === 'topic') {
+        assert.equal(calls[0].data.terms,'교량 통행 재개 조건');
+        assert.equal(calls.at(-1).data.terms,'교량 통행 재개 조건');
+        assert.match(calls.at(-1).instructions,/관련.*만/u);
+        assert.doesNotMatch(cue,/구간별 요약/u);
+      } else {
+        assert.match(calls.at(-1).instructions,/초반/u);
+        assert.match(cue,/회의 초반/u);
+      }
+    } else {
+      assert.equal(calls.length,0);
+      assert.doesNotMatch(cue,/계측이 안정된 뒤|기상 상황/u);
+    }
+  });
+});
+
+test('saved recap keeps its source citation and has time to read the library without using current speech', async t => {
+  const calls = [];
+  const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+    async transport(_url,{body}) {
+      calls.push(JSON.parse(JSON.parse(body).input));
+      return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:'저장 회의의 안건도 확인했습니다.'}]}]});
+    },
+  });
+  event(client,'ask',{timeMs:0,context:'현재 초반 발언'});
+  await Promise.resolve();
+  speech(son,'지난 회의에 어떤 내용이 있었지?',0,80);
+  endpoint(son);
+  const [{id}] = jsonMessages(client,'search');
+  event(client,'search_context',{id,scope:'saved',currentContext:'이 텍스트도 현재 회의입니다.'});
+  t.mock.timers.tick(2_000);
+  assert.equal(voice(),undefined);
+  event(client,'search_history',{id,text:'저장 회의의 시작부터 끝까지'});
+  const saved = ref + '\n' + JSON.stringify({title:'저장된 공정회의',date:'2026-11-17T23:30:00Z',displayDate:'2026-11-18',role:'speaker',excerpt:'납기 5월 10일'});
+  event(client,'search_result',{id,context:saved});
+  await nextTick();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].transcript,'저장 회의의 시작부터 끝까지');
+  const live = voice();
+  live.open();
+  const prompt = inputEvidence(questionConfig(live));
+  assert.match(prompt,/선택한 저장 회의의 구간별 요약.*저장 회의의 안건도 확인했습니다.*저장된 공정회의.*2026-11-18/u);
+  assert.doesNotMatch(prompt,/현재 초반 발언|이 텍스트도 현재 회의|2026-11-17/u);
+  assert.deepEqual(jsonMessages(client,'evidence').at(-1).refs,[ref]);
+});
+
+test('a failed current recap states that its excerpts are incomplete and does not consume stale history', async t => {
+  const {client,son,voice} = setupOrdinaryAudio(t);
+  event(client,'ask',{timeMs:0,context:'현재 회의 첫 발언'});
+  await Promise.resolve();
+  speech(son,'오늘 지금까지 무슨 얘기했어?',0,80);
+  endpoint(son);
+  const [{id}] = jsonMessages(client,'search');
+  event(client,'search_context',{id,scope:'current',currentContext:'시간대별 일부 발언입니다.'});
+  event(client,'search_history',{id,text:'x'.repeat(20_001)});
+  event(client,'search_history',{id,text:'앞 구간 없이 뒤만 들어온 기록'});
+  event(client,'search_result',{id,context});
+  const live = voice();
+  live.open();
+  const prompt = inputEvidence(questionConfig(live));
+  assert.match(prompt,/전체 원문을 처리하지 못했습니다.*시간대별 일부 발언입니다/u);
+  assert.doesNotMatch(prompt,/앞 구간 없이|납기 5월 10일|현재 회의 첫 발언/u);
+});
+
+test('leaving aborts slow recap without starting a late audio reply', async t => {
+  let signal;
+  const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+    transport(_url,request) {
+      signal = request.signal;
+      return new Promise((_resolve,reject) => signal.addEventListener('abort',() => reject(signal.reason),{once:true}));
+    },
+  });
+  event(client,'ask',{timeMs:0});
+  await Promise.resolve();
+  speech(son,'회의 처음부터 정리해줘',0,80);
+  endpoint(son);
+  const [{id}] = jsonMessages(client,'search');
+  event(client,'search_context',{id,scope:'current',currentContext:'일부'});
+  event(client,'search_history',{id,text:'이전 발언'});
+  event(client,'search_result',{id,context:''});
+  assert.equal(signal.aborted,false);
+  event(client,'leave');
+  assert.equal(signal.aborted,true);
+  await nextTick();
+  t.mock.timers.tick(25_000);
+  assert.equal(voice(),undefined);
+  assert.deepEqual(jsonMessages(client,'evidence'),[]);
+});
+
+test('slow recap reaches its deadline and only answers once from partial current material', async t => {
+  let finish;
+  let signal;
+  const {client,son,voice} = setupOrdinaryAudio(t,'meeting',{
+    transport(_url,request) {
+      signal = request.signal;
+      return new Promise(resolve => { finish = resolve; });
+    },
+  });
+  event(client,'ask',{timeMs:0});
+  await Promise.resolve();
+  speech(son,'회의 처음부터 정리해줘',0,80);
+  endpoint(son);
+  const [{id}] = jsonMessages(client,'search');
+  event(client,'search_context',{id,scope:'current',currentContext:'일부 확인한 안건'});
+  event(client,'search_history',{id,text:'이전 발언'});
+  event(client,'search_result',{id,context:''});
+  const warmed = voice();
+  t.mock.timers.tick(22_000);
+  assert.equal(signal.aborted,true);
+  assert.notEqual(voice(), warmed);
+  const live = voice();
+  live.open();
+  assert.match(inputEvidence(questionConfig(live)),/전체 원문을 처리하지 못했습니다.*일부 확인한 안건/u);
+  finish(Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:'늦은 답변'}]}]}));
+  await nextTick();
+  assert.equal(jsonMessages(live,'session.start').length,1);
+  assert.equal(voice(),live);
 });
 
 test('ordinary AI invitation falls back to Soniox after quiet, and old finalize ACKs cannot consume the next question', async (t) => {
@@ -670,10 +1123,10 @@ test('ordinary AI invitation falls back to Soniox after quiet, and old finalize 
   const first=at();
   pcm(4,200);
   speech(son,'언제죠?',first,at(),false);
-  pcm(69);
+  pcm(49);
   assert.equal(finalizations(),0, 'give natural endpointing a chance');
   pcm(3,0,true);
-  pcm(69);
+  pcm(49);
   assert.equal(finalizations(),0, 'suppressed frames do not count as a measured pause');
   pcm(1);
   assert.equal(finalizations(),1);
@@ -693,7 +1146,9 @@ test('ordinary AI invitation falls back to Soniox after quiet, and old finalize 
 
   const second=at();
   pcm(4,4_000);
-  pcm(70);
+  pcm(50);
+  assert.equal(finalizations(),1,'loud sound without Soniox text keeps the original quiet window');
+  pcm(20);
   assert.equal(finalizations(),2);
   speech(son,'어디죠?',second,second+80);
   endpoint(son);
@@ -714,13 +1169,13 @@ test('ordinary AI invitation falls back to Soniox after quiet, and old finalize 
   assert.equal(son.readyState,1);
 });
 
-function setupOrdinaryAudio(t, mode='meeting') {
+function setupOrdinaryAudio(t, mode='meeting', options = {}) {
   t.mock.timers.enable({apis:['Date','setTimeout'],now:0});
   const client=new MockProvider();
   const son=new MockProvider();
   let live;
   client.open();
-  handleStream(client,{...keys,upstream:url=>url.includes('soniox') ? son : (live=new MockProvider())});
+  handleStream(client,{...keys,...options,upstream:url=>url.includes('soniox') ? son : (live=new MockProvider())});
   event(client,'start',{mode,timeMs:0});
   son.open();
   t.after(()=>client.close());
@@ -734,6 +1189,67 @@ function setupOrdinaryAudio(t, mode='meeting') {
     }
   }};
 }
+
+test('pausing a meeting silences only meeting transcription and keeps invited questions', async t => {
+  const {client,son,voice,pcm,at} = setupOrdinaryAudio(t);
+  const frames = () => son.messages.filter(Buffer.isBuffer);
+  const tokens = () => jsonMessages(client,'soniox').flatMap(item => item.tokens)
+    .filter(token => !token.text.startsWith('<'));
+  const nonzero = frame => frame.some(value => value !== 0);
+  pcm(4,4000);
+  assert.equal(nonzero(frames().at(-1)),true);
+  event(client,'transcription_pause',{paused:true});
+  pcm(4,4000);
+  assert.equal(nonzero(frames().at(-1)),false);
+  // Earlier words may be finalized after the UI has been paused.
+  speech(son,'중지하기 전의 발화',0,80);
+  speech(son,'중지 중 전사에서 제외',80,160);
+  assert.deepEqual(tokens().map(token => token.text),['중지하기 전의 발화']);
+  assert.equal(jsonMessages(client,'search').length,0);
+
+  event(client,'ask',{timeMs:at()});
+  await Promise.resolve();
+  pcm(4,4000);
+  assert.equal(nonzero(frames().at(-1)),true);
+  speech(son,'중지 중 AI에게 한 질문',160,240);
+  endpoint(son);
+  assert.deepEqual(jsonMessages(client,'search').map(item => item.query),['중지 중 AI에게 한 질문']);
+  assert.equal(tokens().at(-1).questionAudio,true);
+  const id = jsonMessages(client,'search').at(-1).id;
+  event(client,'search_result',{id,context:''});
+  voice().open();
+  assert.equal(inputQuestion(questionConfig(voice())),'중지 중 AI에게 한 질문');
+
+  pcm(4,4000);
+  assert.equal(nonzero(frames().at(-1)),false,'meeting audio is still silent while AI is responding');
+  event(client,'leave');
+  event(client,'transcription_pause',{paused:false});
+  pcm(4,4000);
+  assert.equal(nonzero(frames().at(-1)),true);
+  speech(son,'재개 후 발화',320,400);
+  assert.deepEqual(tokens().map(token => [token.text,token.questionAudio]),[
+    ['중지하기 전의 발화',undefined],['중지 중 AI에게 한 질문',true],['재개 후 발화',undefined],
+  ]);
+});
+
+test('a personal session opened paused sends silent frames from the start and resumes normally', t => {
+  const client = new MockProvider();
+  const son = new MockProvider();
+  client.open();
+  handleStream(client,{...keys,upstream:()=>son});
+  t.after(() => client.close());
+  event(client,'start',{mode:'personal',timeMs:0,transcriptionPaused:true});
+  son.open();
+  const audio = Buffer.alloc(960,32).toString('base64');
+  event(client,'audio',{audio});
+  assert.deepEqual(son.messages.at(-1),Buffer.alloc(960));
+  speech(son,'중지 구간의 가짜 문장',0,20);
+  event(client,'transcription_pause',{paused:false});
+  event(client,'audio',{audio});
+  assert.deepEqual(son.messages.at(-1),Buffer.alloc(960,32));
+  speech(son,'재개 후 개인 녹음',20,40);
+  assert.deepEqual(jsonMessages(client,'soniox').flatMap(message=>message.tokens.map(token=>token.text)),['재개 후 개인 녹음']);
+});
 
 test('barge-in discards the interrupted response and keeps the finalized replacement question before GPT-Live is ready', async (t) => {
   const app = await setup(t);
@@ -773,7 +1289,7 @@ test('barge-in discards the interrupted response and keeps the finalized replace
   speech(son, ' 언제인가요?', 60, 80);
   endpoint(son);
   await nextTick();
-  assert.equal(app.providers.length, 2, 'replacement provider waits for the finalized question and source lookup');
+  assert.equal(app.providers.length, 2, 'replacement provider waits for evidence');
   assert.equal(messages.slice(beforeBarge).filter(({type}) => type === 'audio' || type === 'live').length, 0);
 
   assert.deepEqual(searches().map(({query}) => query), ['첫 질문', '아니, 최종 날짜는 언제인가요?']);

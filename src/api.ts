@@ -4,6 +4,7 @@ import { TYPED_QUESTION_LIMIT, typedJudgeRequest, typedQuestionRequest, type Typ
 import { compactParts, draftContext, type Connection } from './workflow';
 import { isAiVoice, type AiVoice } from '../server/voices.mjs';
 import { readVoicePreview } from './voice-preview';
+import type { CorrectionRequest } from './transcript-correction';
 
 const settingsKey = 'sitenote.connection.v1';
 export type Settings = Partial<Connection> & {keepAudio?: boolean; voice?: AiVoice};
@@ -44,6 +45,8 @@ async function request<T>(connection: Connection, path: string, body?: object): 
 }
 
 export const health = (c: Connection) => request<Health>(c, '/health');
+export const correctTranscription = (c: Connection, body: CorrectionRequest) =>
+  request<{corrections: {id: string; text: string}[]}>(c, '/transcript-corrections', body);
 export async function fetchVoicePreview(connection: Connection, voice: AiVoice, signal: AbortSignal) {
   const response = await fetch(connection.url + '/v1/voice-preview', {
     method:'POST', redirect:'error', signal,

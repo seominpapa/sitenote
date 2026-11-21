@@ -5,7 +5,8 @@ import SiteAudio from '../modules/site-audio';
 import { createVoiceSession } from './session/session';
 import { applyTurn, searchContext, type RecordData } from './records/core';
 import { recordStore } from './records/expo';
-import { liveContext, resolveOriginalSources, searchPastOriginals } from './recordContext';
+import { liveContext, lookupPastOriginals, resolveOriginalSources } from './recordContext';
+import { buildMeetingRecap, meetingQuestionHistory } from './meeting-history';
 import { Active, type Mode } from './ui/Active';
 import type { Connection } from './workflow';
 import type { AiVoice } from '../server/voices.mjs';
@@ -20,7 +21,6 @@ export function Voice({mode, connection, keepAudio, record, getRecord, getRecord
   useKeepAwake('sitenote-voice');
   const [source, setSource] = useState<{record: RecordData; turnId?: string}>();
   const [warning, setWarning] = useState<string>();
-  const previousQuery = useRef('');
   const archivePart = useRef(0);
   const [session] = useState(() => createVoiceSession({
     baseUrl: connection.url, token: connection.token, mode, voice,
@@ -38,10 +38,12 @@ export function Voice({mode, connection, keepAudio, record, getRecord, getRecord
     },
     persist: async turn => save(applyTurn(getRecord(), turn)),
     getContext: () => liveContext(getRecord(), mode === 'followup').context,
-    search: async query => {
-      const hits = searchPastOriginals(getRecords(), getRecord(), query, previousQuery.current);
-      previousQuery.current = query;
-      return searchContext(hits);
+    getQuestionMeeting: getRecord,
+    getQuestionHistory: (_query, beforeMs, pending, plan) => meetingQuestionHistory(getRecord(), beforeMs, pending, plan),
+    search: async (query,beforeMs,pending,scope,plan) => {
+      if (scope === 'current' || plan?.scope === 'current') return '';
+      const {evidence,meeting} = lookupPastOriginals(getRecords(),getRecord(),query,'',beforeMs,pending,plan);
+      return {context:searchContext(evidence),recap:meeting && buildMeetingRecap(meeting)};
     },
   }));
   const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot);

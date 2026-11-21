@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
-import { parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown } from '../../src/records/markdown.ts';
+import { summaryMarkdown, transcriptMarkdown } from '../../src/records/markdown.ts';
 import { createRecord } from '../../src/records/model.ts';
 
 const title = '현장 착공 준비 회의';
@@ -80,14 +80,16 @@ test('speaker edits update saved summaries and survive reload and export without
 
     const downloadRequested = page.waitForEvent('download');
     await page.getByRole('button', {name:'Markdown 내보내기'}).click();
-    const markdown = await readFile(await (await downloadRequested).path(), 'utf8');
-    const exported = parseTranscript(markdown);
-    expect(exported.speakers).toEqual({'meeting:a:1':'김 담당','followup:c:1':'이 참가자'});
-    expect(exported.turns).toEqual(turns);
+    const download = await downloadRequested;
+    const markdown = await readFile(await download.path(), 'utf8');
+    expect(download.suggestedFilename()).toMatch(/^\d{8}_현장 착공 준비 회의\.md$/u);
+    expect(markdown).not.toMatch(/<!-- sitenote-|meeting:a:1|followup:c:1|\[record:/);
+    for (const {text} of turns) expect(markdown).toContain(`> ${text}`);
     expect(markdown.match(/### .*김 담당/g)).toHaveLength(2);
     expect(markdown.match(/### .*이 참가자/g)).toHaveLength(2);
-    expect(parseSummary(markdown.split('\n---\n\n').at(-1)).summary).toContain('김 담당이 안전 점검을 부탁했습니다.');
-    expect(parseSummary(markdown.split('\n---\n\n').at(-1)).summary).toContain('이 참가자가 내일 순찰합니다.');
+    const exportedSummary = markdown.split('\n---\n\n').at(-1);
+    expect(exportedSummary).toContain('김 담당이 안전 점검을 부탁했습니다.');
+    expect(exportedSummary).toContain('이 참가자가 내일 순찰합니다.');
   } finally {
     await page.close();
     await new Promise(done => server.close(done));

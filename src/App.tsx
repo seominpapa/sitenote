@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, BackHandler, Modal, Platform, Text, View } from 'react-native';
 import * as Sharing from 'expo-sharing';
-import { answer, generateFollowup, health, judgeFollowup, loadSettings, saveSettings, summarize, type Health, type Settings } from './api';
+import { answer, correctTranscription, generateFollowup, health, judgeFollowup, loadSettings, saveSettings, summarize, type Health, type Settings } from './api';
+import { applyTranscriptCorrections, canCorrectTranscript, requestTranscriptCorrections } from './transcript-correction';
 import { createRecord, renameSpeaker, searchContext, type RecordData } from './records/core';
 import { chooseAndroidNoteFolder, loadAndroidNoteFolder, recordStore, type AndroidNoteFolder } from './records/expo';
 import { analysisContext, resolveOriginalSources, searchOriginalAnswers } from './recordContext';
@@ -196,6 +197,20 @@ export default function App() {
     void makeSummary(value, note);
   }
 
+  function correctTranscript(record: RecordData) {
+    if (!connection) return;
+    void action(async () => {
+      setStatus('문맥에 맞춰 전사 보정 중…');
+      const edits = await requestTranscriptCorrections(record, body => correctTranscription(connection,body));
+      const latest = list.current.find(item => item.id === record.id);
+      if (!latest) throw Error('기록을 찾을 수 없습니다.');
+      const next = applyTranscriptCorrections(latest,edits);
+      const count = next.turns.filter((turn,i) => turn !== latest.turns[i]).length;
+      if (count) { await recordStore.save(next); publish(next); setResult(undefined); }
+      setStatus(count ? `전사 ${count}개를 보정했습니다. 기존 요약은 다시 만들 수 있습니다.` : '추가로 보정할 발언을 찾지 못했습니다.');
+    }, '전사 보정을 완료하지 못했습니다. 보정 전 원문은 유지됩니다.');
+  }
+
   function jump(id: string, turnId?: string) {
     if (busy.current) return;
     if (list.current.some(item => item.id === id)) navigate({page: 'detail', id, turnId, from: route.page === 'search' ? 'search' :
@@ -265,8 +280,12 @@ export default function App() {
     let added = false;
     await action(async () => {
       setStatus(undefined);
-      const document = await recordStore.importDocument(createId(), project);
-      if (document) { publish(document); setResult(undefined); setStatus('회의 문서를 노트에 추가했습니다.'); added = true; }
+      try {
+        const document = await recordStore.importDocument(createId(), project);
+        if (document) { publish(document); setResult(undefined); setStatus('회의 문서를 노트에 추가했습니다.'); added = true; }
+      } catch (error) {
+        Alert.alert('문서를 추가하지 못했습니다', message(error, '다른 문서 파일을 선택해 주세요.'));
+      }
     }, '회의 문서를 추가하지 못했습니다.');
     return added;
   }
@@ -306,6 +325,7 @@ export default function App() {
       : route.page === 'search' ? <SearchPage back={back} jump={jump} run={runSearch} result={result} working={working} status={status}/>
       : route.page === 'detail' && current ? <Details key={current.id} record={current} focus={route.turnId}
         back={() => { if (!busy.current) back(); }} refs={detailReferences(current)} rename={editSpeaker}
+        correctTranscript={connection && canCorrectTranscript(current) ? () => correctTranscript(current) : undefined}
         working={working} status={[status,folderIssue].filter(Boolean).join(' ')} sources={answerSources(current)} jump={jump}
         openOriginal={() => openOriginal(current)} update={async fields => {
           const value = {...current, ...fields, updatedAt: new Date().toISOString()};

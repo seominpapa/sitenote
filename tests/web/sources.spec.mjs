@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { EventEmitter, once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
+import { ordinaryQuestionPlan } from './voice-plan.mjs';
 import { summaryMarkdown, transcriptMarkdown } from '../../src/records/markdown.ts';
 import { createRecord } from '../../src/records/model.ts';
 
@@ -24,6 +25,11 @@ const question = '방수막 재시험 언제였나요?';
 const noMatch = '제브라피시 먹이반응?';
 const answer = '지난 회의에서 “목요일 오전 열 시에 진행하기로 합의했습니다”라고 했습니다.';
 const emptyAnswer = '관련 과거 원문을 찾지 못했습니다.';
+const fallbackQuestion = '토요일에 무슨 얘기했어?';
+const fallbackAnswer = '요약에만 있는 내용입니다. 토요일이라는 추정이 있습니다.';
+const latestQuestion = '최근에 한 회의 내용이 뭐였지?';
+const latestAnswer = '가장 최근에 저장한 회의에서는 현장 출입구를 옮기기로 했습니다.';
+const newestMeetingText = '현장 출입구를 북측으로 옮기기로 했습니다.';
 const summaryTitle = '오늘 회의 핵심 정리';
 const forged = '[record:summary-only#summary]';
 const at = '2026-09-04T04:30:00.000Z';
@@ -41,6 +47,8 @@ const fixtures = [
   seed({id:'corroborating', title:corroboratingTitle, turns:[speaking('second-original', corroborating)]}),
   seed({id:'lower-ranked', title:'서류 준비', now:'2026-08-04T04:30:00.000Z', turns:[speaking('third-original', lowerRanked)]}),
   seed({id:'title-only', title:'방수막 재시험 자료 모음', turns:[speaking('title-decoy', titleOnly)]}),
+  seed({id:'latest-meeting', title:'출입구 배치 회의', now:'2026-09-05T04:30:00.000Z',
+    turns:[speaking('gate-decision', newestMeetingText)]}),
   seed({id:'summary-only', title:'기타 메모', summary:summaryOnly, turns:[speaking('unrelated', unrelated),
     {id:'ai-decoy', section:'meeting-ai', role:'ai', text:aiOnly, timeMs:1000}]}),
   seed({id:'private-record', title:'비공개 개인 기록', kind:'personal', allowInMeetings:false, turns:[{
@@ -87,11 +95,23 @@ test('voice references are the matched historical originals, readable during rec
   let summarySource;
   const requests = [];
   const server = createApp({
+    async planQuestion(input) {
+      if (input.question !== latestQuestion) return ordinaryQuestionPlan(input);
+      expect(input.meeting).toEqual({title:activeTitle,project});
+      expect(input.recentQuestions).toEqual([question,fallbackQuestion,noMatch]);
+      return {scope:'latest',range:'overview',terms:'',sameProject:false};
+    },
     webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
     accessToken:'fixture-access-token-not-a-real-key', openaiKey:'fixture-openai', sonioxKey:'fixture-soniox',
     async transport(_url, request) {
       const payload = JSON.parse(request.body);
       const data = JSON.parse(payload.input);
+      if (data.question === latestQuestion) {
+        expect(data.transcript).toContain(newestMeetingText);
+        expect(data.transcript).not.toContain(activeText);
+        expect(data.transcript).not.toContain(original);
+        return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:newestMeetingText}]}]});
+      }
       if (!data.source?.includes(activeText)) return new Response(null, {status:400});
       summarySource = data.source;
       return Response.json({status:'completed', output:[{type:'message', content:[{type:'output_text', text:JSON.stringify({
@@ -124,10 +144,11 @@ test('voice references are the matched historical originals, readable during rec
           question: input.filter(item => item.role === 'user').at(-1).content[0].text,
           evidence: input.find(item => item.role === 'user'
             && item.content[0].text.startsWith('다음은 참고 데이터입니다: '))?.content[0].text ?? '',
+          instructions: message.session.instructions,
         });
         reply({type:'session.started'});
         reply({type:'session.output_audio.delta', event_id:`audio-${index}`, delta:pcm.toString('base64')});
-        reply({type:'session.output_transcript.delta', event_id:`text-${index}`, delta:index === 0 ? answer : emptyAnswer, start_ms:10,end_ms:110});
+        reply({type:'session.output_transcript.delta', event_id:`text-${index}`, delta:[answer,fallbackAnswer,emptyAnswer,latestAnswer][index], start_ms:10,end_ms:110});
       });
     },
   });
@@ -175,11 +196,29 @@ test('voice references are the matched historical originals, readable during rec
     await preview.getByRole('button', {name:'닫기'}).click();
     await expect(preview).toHaveCount(0);
 
+    utterance = fallbackQuestion;
+    await expect(turns.filter({hasText:fallbackAnswer})).toBeVisible();
+    expect(requests[1].evidence).toContain(summaryOnly);
+    expect(JSON.parse(requests[1].evidence.split('다음은 참고 데이터입니다: ')[1])).toContain('"summaryOnly":true');
+    expect(requests[1].instructions).toContain('요약에만 있는 내용');
+    await sources.getByRole('list',{name:'요약에만 있는 내용'}).getByRole('button').click();
+    const summaryPreview = page.getByRole('dialog', {name:'요약에만 있는 내용'});
+    await expect(summaryPreview.getByText(summaryOnly,{exact:true})).toBeVisible();
+    await summaryPreview.getByRole('button',{name:'닫기'}).click();
+    await expect(ai).toContainText('질문 듣는 중');
+
     utterance = noMatch;
     await expect(turns.filter({hasText:emptyAnswer})).toBeVisible();
-    expect(requests.map(item => item.question)).toEqual([question, noMatch]);
-    expect(requests[1].evidence).not.toContain('검색된 과거 원문:');
+    expect(requests.map(item => item.question)).toEqual([question, fallbackQuestion, noMatch]);
+    expect(requests[2].evidence).not.toContain('검색된 과거 원문:');
     await expect(sources).toHaveCount(0);
+    await expect(ai).toContainText('질문 듣는 중');
+    utterance = latestQuestion;
+    await expect(turns.filter({hasText:latestAnswer})).toBeVisible();
+    expect(requests[3].evidence).toContain(newestMeetingText);
+    expect(requests[3].evidence).not.toContain(activeText);
+    expect(requests[3].evidence).not.toContain(original);
+    await expect(sources.getByRole('button', {name:/출입구 배치 회의/})).toBeVisible();
     await page.getByRole('button', {name:'AI 질문 닫기'}).click();
     await page.getByRole('button', {name:'녹음 종료'}).click();
     await expect(page.getByRole('heading', {name:summaryTitle})).toBeVisible();
@@ -190,7 +229,10 @@ test('voice references are the matched historical originals, readable during rec
     await page.reload();
     await page.getByTestId('record-item').filter({hasText:activeTitle}).click();
     await expect(page.getByRole('heading', {level:1, name:activeTitle})).toBeVisible();
-    const saved = page.getByTestId('saved-sources');
+    const saved = turns.filter({hasText:answer}).getByTestId('saved-sources');
+    const savedFallback = turns.filter({hasText:fallbackAnswer}).getByTestId('saved-sources')
+      .getByRole('list',{name:'요약에만 있는 내용'}).getByRole('link');
+    await expect(savedFallback).toHaveAttribute('href', /#record:summary-only#summary-only-[0-9a-f]{8}$/);
     await expect(turns.filter({hasText:answer}).getByTestId('saved-sources')).toHaveCount(1);
     await expect(turns.filter({hasText:emptyAnswer}).getByTestId('saved-sources')).toHaveCount(0);
     await expect(saved.getByRole('list', {name:'답변에서 직접 인용한 원문'})).toContainText(originalTitle);
@@ -209,17 +251,20 @@ test('voice references are the matched historical originals, readable during rec
   }
 });
 
-test('library search keeps summaries searchable but only sends original speech to answer a question', async ({page}) => {
+test('library AI answers label unconfirmed summary evidence and link supported answers to the original turn', async ({page}) => {
   const contexts = [];
   const reference = '[record:past-original#exact-original]';
   const server = createApp({
     webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)), accessToken:'fixture-access-token-not-a-real-key',
     openaiKey:'fixture-openai', sonioxKey:'fixture-soniox',
     async transport(_url, request) {
-      const {source} = JSON.parse(JSON.parse(request.body).input);
+      const payload = JSON.parse(request.body);
+      const {source} = JSON.parse(payload.input);
       contexts.push(source);
+      const fallback = /\[record:summary-only#summary-only-[0-9a-f]{8}\]/.exec(source)?.[0];
+      if (fallback) expect(payload.instructions).toContain('요약에만 있는 내용');
       return Response.json({status:'completed', output:[{type:'message', content:[{type:'output_text',
-        text:'목요일 오전입니다. ' + reference + ' ' + forged}]}]});
+        text:fallback ? '토요일이라는 요약입니다. ' + fallback + ' ' + forged : '목요일 오전입니다. ' + reference + ' ' + forged}]}]});
     },
   });
   server.listen(0, '127.0.0.1');
@@ -233,17 +278,25 @@ test('library search keeps summaries searchable but only sends original speech t
       await page.getByRole('button', {name:'검색 실행'}).click();
       await page.getByRole('button', {name:'이 기록에 AI로 질문'}).click();
     };
+    const result = page.getByRole('heading', {name:'AI 답변'}).locator('..');
     await submit('토요일');
-    await expect(page.getByText(summaryOnly, {exact:true})).toBeVisible();
-    await expect(page.getByText('관련 있는 사람의 원문을 찾지 못했습니다.')).toBeVisible();
-    expect(contexts).toHaveLength(0);
-    await submit('목요일');
-    const result = page.locator('.summary');
-    await expect(result).toContainText('목요일 오전입니다.');
+    const fallback = result.getByRole('link', {name:/요약에만 있는 내용: 기타 메모/});
+    await expect(fallback).toBeVisible();
     expect(contexts).toHaveLength(1);
-    expect(contexts[0]).toContain(original);
+    expect(contexts[0]).toContain(summaryOnly);
+    expect(contexts[0]).toContain('"summaryOnly":true');
     expect(contexts[0]).not.toContain(aiOnly);
-    expect(contexts[0]).not.toContain(summaryOnly);
+    await fallback.click();
+    await expect(page.locator('#summary')).toBeFocused();
+    await expect(page.locator('#summary')).toContainText('원문에서 확인되지 않았습니다.');
+    await page.getByRole('button', {name:'최근 노트'}).click();
+    await page.getByRole('button', {name:'검색', exact:true}).click();
+    await submit('목요일');
+    await expect(result).toContainText('목요일 오전입니다.');
+    expect(contexts).toHaveLength(2);
+    expect(contexts[1]).toContain(original);
+    expect(contexts[1]).not.toContain(aiOnly);
+    expect(contexts[1]).not.toContain(summaryOnly);
     await expect(result).not.toContainText(forged);
     await result.getByRole('link', {name:new RegExp(originalTitle)}).click();
     await expect(page.getByTestId('transcript-turn').filter({hasText:original})).toBeFocused();

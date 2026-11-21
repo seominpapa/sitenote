@@ -1,5 +1,6 @@
-import { isOriginalSourceRef, type Turn } from '../records/core.ts';
+import { isOriginalSourceRef, isSourceRef, type Turn, type VoiceSearchPlan } from '../records/core.ts';
 import type { AiVoice } from '../../server/voices.mjs';
+import type { MeetingQuestionHistory, MeetingRecap } from '../meeting-history.ts';
 import { liveTranscript, sonioxTranscript, type LiveEvent, type SonioxToken } from './transcript.ts';
 
 export type Mode = 'meeting' | 'personal' | 'followup';
@@ -13,6 +14,7 @@ export type AudioEvents = {
 export type Audio = {
   startCapture(signal?: AbortSignal): Promise<void>;
   stopCapture(): Promise<void>;
+  setMicMuted?(muted: boolean): void;
   play(audio: string): Promise<void>;
   stopPlayback(): Promise<void>;
   addListener(name: 'onAudio', listener: (event: AudioEvents['onAudio']) => void): {remove(): void};
@@ -22,6 +24,8 @@ export type Audio = {
 export type Snapshot = {
   phase: Phase;
   paused: boolean;
+  transcriptionPaused: boolean;
+  micMuted: boolean;
   capturing: boolean;
   sonioxReady: boolean;
   liveReady: boolean;
@@ -49,18 +53,21 @@ type Options = {
   voice?: AiVoice;
   audio: Audio;
   persist(turn: Turn): Promise<void>;
-  search(query: string): Promise<string>;
+  search(query: string, beforeMs: number, pendingTurns: readonly Turn[], scope?: MeetingQuestionHistory['scope'], plan?: VoiceSearchPlan):
+    Promise<string | {context: string; recap?: MeetingRecap}>;
+  getQuestionHistory?(query: string, beforeMs: number, pendingTurns: readonly Turn[], plan?: VoiceSearchPlan): MeetingQuestionHistory;
+  getQuestionMeeting?(): {title: string; project?: string};
   getContext(): string;
   timeMs?: () => number;
   connect?: (url: string, token: string) => Socket;
   finishTimeoutMs?: number;
 };
 type Incoming =
-  | {type:'ready'; scope:'meeting'|'live'}
+  | {type:'ready'; scope:'meeting'|'live'; plansSearch?: boolean}
   | {type:'soniox'; tokens: SonioxToken[]; offsetMs: number; streamId: string}
   | {type:'live'; event: LiveEvent; offsetMs: number; streamId: string; refs?: unknown; quotedRefs?: unknown}
   | {type:'audio'; audio: string}
-  | {type:'search'; id: string; query: string}
+  | {type:'search'; id: string; query: string; questionStart?: number; plan?: VoiceSearchPlan}
   | {type:'evidence'; refs: string[]}
   | {type:'ai_state'; state: 'meeting'|'listening'|'processing'|'responding'|'idle'; interrupted?: boolean}
   | {type:'followup_state'; state: FollowupState}
@@ -69,6 +76,12 @@ type Incoming =
 const saveError = '원문을 저장하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도하세요.';
 const disconnected = '연결이 끊겼습니다. 저장된 원문을 유지했으며 연결이 끊긴 구간은 녹음되지 않았습니다.';
 const unflushed = '서버에서 마지막 전사 완료 신호를 받지 못했습니다. 이미 저장된 부분은 유지했습니다.';
+const validSearchPlan = (plan?: VoiceSearchPlan) => plan != null &&
+  ['general','current','latest','related','newest_note'].includes(plan.scope) &&
+  ['overview','opening','topic','prior-question'].includes(plan.range) &&
+  typeof plan.terms === 'string' && plan.terms.length <= 300 && typeof plan.sameProject === 'boolean';
+// Keep the PCM frame length while removing audio before it leaves the device.
+const silentFrame = (frame: string) => frame.replace(/[^=]/g, 'A');
 
 function reactNativeSocket(url: string, token: string): Socket {
   const RNWebSocket = WebSocket as unknown as new (url: string, protocols: string[], options: { headers: Record<string, string> }) => Socket;
@@ -80,7 +93,7 @@ export function createVoiceSession(options: Options) {
   const onDemand = mode !== 'followup';
   const startedAt = Date.now();
   const time = options.timeMs ?? (() => Date.now() - startedAt);
-  let state: Snapshot = { phase:'idle', paused:false, capturing:false, sonioxReady:false, liveReady:false, playback:false, partials:[], references:[], saving:false };
+  let state: Snapshot = { phase:'idle', paused:false, transcriptionPaused:false, micMuted:false, capturing:false, sonioxReady:false, liveReady:false, playback:false, partials:[], references:[], saving:false };
   const listeners = new Set<() => void>();
   const pending = new Map<string, Turn>();
   const soniox = sonioxTranscript();
@@ -98,6 +111,7 @@ export function createVoiceSession(options: Options) {
   let finishTask: Promise<{flushed: boolean; saved: boolean}> | undefined;
   let lastFlushed = true;
   let liveUnavailable = false;
+  let plansSearch = false;
   let engaged = false;
   let outputBlocked = false;
   let disposed = false;
@@ -126,6 +140,11 @@ export function createVoiceSession(options: Options) {
     if (!target || target.readyState !== 1) return false;
     try { target.send(JSON.stringify(message)); return true; }
     catch { return false; }
+  };
+  const recordingDetails = () => {
+    const meeting = options.getQuestionMeeting?.();
+    if (!meeting) return;
+    return {title:meeting.title.trim().slice(0,120), project:meeting.project?.trim().slice(0,120) || undefined};
   };
 
   function retrySave(): Promise<boolean> {
@@ -246,7 +265,11 @@ export function createVoiceSession(options: Options) {
     if (capture || state.paused || endTask) return capture;
     const control = new AbortController();
     captureControl = control;
-    const start = () => control.signal.aborted ? Promise.reject(Error('마이크 시작이 취소되었습니다.')) : audio.startCapture(control.signal);
+    const start = async () => {
+      if (control.signal.aborted) throw Error('마이크 시작이 취소되었습니다.');
+      audio.setMicMuted?.(state.micMuted);
+      await audio.startCapture(control.signal);
+    };
     capture = stoppingCapture ? stoppingCapture.then(start) : start();
     const active = capture;
     void active.then(() => {
@@ -256,16 +279,26 @@ export function createVoiceSession(options: Options) {
     });
     return active;
   };
-  const lookup = async (current: Socket, id: string, query: string) => {
+  const lookup = async (current: Socket, id: string, query: string, questionStart?: number, plan?: VoiceSearchPlan) => {
     const at = generation;
+    const beforeMs = typeof questionStart === 'number' && Number.isFinite(questionStart) && questionStart >= 0
+      ? (firstAudioAt ?? 0) + questionStart : questions.at(-1)?.start ?? time();
+    const pendingTurns = [...pending.values()];
+    let history: MeetingQuestionHistory | undefined;
+    try { history = options.getQuestionHistory?.(query, beforeMs, pendingTurns, plan); }
+    catch { /* Other eligible sources can still be searched. */ }
+    if (history?.context || history?.scope) send({type:'search_context',id,currentContext:history.context,scope:history.scope},current);
     let failed = false;
-    const context = await options.search(query).catch(() => {
+    const result = await options.search(query,beforeMs,pendingTurns,history?.scope,plan).catch(() => {
       failed = true;
       return '기록 검색에 실패했습니다. 근거가 없다고 단정하지 마세요.';
     });
     if (socket === current && generation === at && state.liveReady && (!onDemand || engaged) && !finishTask) {
       if (failed) patch({error:'기기 저장소에서 기록을 검색하지 못했습니다.'});
-      send({type:'search_result',id,context,...(failed ? {failed:true} : {})},current);
+      const recap = history?.recap ?? (typeof result === 'string' ? undefined : result.recap);
+      const historyIncomplete = recap?.incomplete || recap?.chunks.some(text => !send({type:'search_history',id,text},current));
+      send({type:'search_result',id,context:typeof result === 'string' ? result : result.context,
+        ...(historyIncomplete ? {historyIncomplete:true} : {}),...(failed ? {failed:true} : {})},current);
     }
   };
 
@@ -280,6 +313,7 @@ export function createVoiceSession(options: Options) {
       case 'ready':
         if (endTask || finishTask || state.phase === 'finishing') break;
         if (event.scope === 'meeting') {
+          plansSearch = event.plansSearch === true;
           const transcribing = onDemand || liveUnavailable;
           if (transcribing) clearTimeout(connectingTimer);
           startCapture();
@@ -299,8 +333,13 @@ export function createVoiceSession(options: Options) {
         if (!Array.isArray(event.tokens) || typeof event.streamId !== 'string' || !Number.isFinite(event.offsetMs)) break;
         {
           firstAudioAt ??= event.offsetMs;
-          const change = soniox.receive(event.streamId,firstAudioAt,event.tokens,at => mode !== 'meeting' ? mode :
-            questions.some(({start,end}) => at >= start && (end === undefined || at < end)) ? 'meeting-ai' : 'meeting');
+          const tokens = state.transcriptionPaused
+            ? event.tokens.filter(token => token && (token.is_final === true || token.questionAudio === true)) : event.tokens;
+          const change = soniox.receive(event.streamId,firstAudioAt,tokens,(at, token) => {
+            if (mode !== 'meeting') return mode;
+            const invited = token.questionAudio === true || questions.some(({start,end}) => at >= start && (end === undefined || at < end));
+            return invited ? 'meeting-ai' : 'meeting';
+          });
           enqueue(change.turns);
           sonioxPartials = change.partials;
           publishPartials();
@@ -311,8 +350,8 @@ export function createVoiceSession(options: Options) {
         if (event.event.type === 'session.input_transcript.delta') break;
         if (event.event.type === 'session.output_transcript.delta' && (outputBlocked || !state.liveReady)) break;
         {
-          const refs = onDemand && Array.isArray(event.refs) ? [...new Set(event.refs.filter(isOriginalSourceRef))].slice(0, 2) : undefined;
-          const quotes = Array.isArray(event.quotedRefs) ? event.quotedRefs : [];
+          const refs = onDemand && Array.isArray(event.refs) ? [...new Set(event.refs.filter(isSourceRef))].slice(0, 2) : undefined;
+          const quotes = Array.isArray(event.quotedRefs) ? event.quotedRefs.filter(isOriginalSourceRef) : [];
           const quoted = refs?.filter(ref => quotes.includes(ref));
           const {turns} = live.receive(event.streamId,event.offsetMs,event.event,time(),refs,quoted);
           if (onDemand) enqueue(turns);
@@ -338,10 +377,13 @@ export function createVoiceSession(options: Options) {
         }
         break;
       case 'search':
-        if (activeAi && typeof event.id === 'string' && typeof event.query === 'string') void lookup(current,event.id,event.query);
+        if (activeAi && typeof event.id === 'string' && typeof event.query === 'string' &&
+          (!options.getQuestionMeeting || validSearchPlan(event.plan))) {
+          void lookup(current,event.id,event.query,event.questionStart,event.plan);
+        }
         break;
       case 'evidence':
-        if (activeAi && Array.isArray(event.refs)) patch({references:event.refs.filter(ref => typeof ref === 'string')});
+        if (activeAi && Array.isArray(event.refs)) patch({references:[...new Set(event.refs.filter(isSourceRef))].slice(0, 2)});
         break;
       case 'followup_state':
         if (mode === 'followup' && ['prompting','waiting','judging','complete'].includes(event.state)) patch({followupState:event.state});
@@ -403,6 +445,7 @@ export function createVoiceSession(options: Options) {
     outputBlocked = false;
     suppressedInput = false;
     firstAudioAt = undefined;
+    plansSearch = false;
     liveUnavailable = false;
     let current: Socket;
     try { current = (options.connect ?? reactNativeSocket)(socketUrl(),options.token); }
@@ -417,6 +460,8 @@ export function createVoiceSession(options: Options) {
     const sendStart = () => {
       if (socket !== current || endTask || finishTask) return;
       if (!send({type:'start',mode,timeMs:time(),...(options.voice ? {voice:options.voice} : {}),
+        meeting:recordingDetails(),
+        ...(state.transcriptionPaused ? {transcriptionPaused:true} : {}),
         ...(onDemand ? {} : {context:options.getContext()})},current)) {
         endUnexpected(disconnected,'disconnected');
       } else startedSocket = current;
@@ -493,6 +538,19 @@ export function createVoiceSession(options: Options) {
     await closeStream();
     if (!finishTask) patch({phase:'recording'});
   }
+  function setTranscriptionPaused(paused: boolean) {
+    if (disposed || !onDemand || finishTask || endTask || state.phase === 'finished' || state.transcriptionPaused === paused) return;
+    if (socket && startedSocket === socket && !send({type:'transcription_pause',paused})) {
+      endUnexpected(disconnected,'disconnected');
+    }
+    sonioxPartials = [];
+    patch({transcriptionPaused:paused,partials:[]});
+  }
+  function setMicMuted(muted: boolean) {
+    if (disposed || finishTask || endTask || state.phase === 'finished' || state.micMuted === muted) return;
+    audio.setMicMuted?.(muted);
+    patch({micMuted:muted});
+  }
   let subs: Array<{remove(): void}> = [];
   function start() {
     if (!subs.length) subs = [
@@ -502,12 +560,13 @@ export function createVoiceSession(options: Options) {
         if (bargeIn) {
           const speaking = state.playback || queueingPlayback || suppressedInput || state.phase === 'responding';
           // The interrupt sets the Soniox cutoff before the preserved opening speech.
-          muted = muted || !recording || !onDemand || !engaged || outputBlocked || !speaking || !interruptOutput(true);
+          muted = muted || state.micMuted || !recording || !onDemand || !engaged || outputBlocked || !speaking || !interruptOutput(true);
         }
-        suppressedInput = muted;
+        suppressedInput = muted && !state.micMuted;
         if (!suppressedInput) settlePlayback();
         if (recording) {
-          if (send({type:'audio',audio:frame,...(muted ? {suppressed:true} : {})})) {
+          const silent = state.micMuted || (state.transcriptionPaused && !engaged);
+          if (send({type:'audio',audio:silent ? silentFrame(frame) : frame,...(silent || muted ? {suppressed:true} : {})})) {
             // The Soniox clock starts at the first PCM frame, after any local permission prompt.
             firstAudioAt ??= Math.max(0,time() - Math.round(frame.length / 64));
           }
@@ -550,10 +609,19 @@ export function createVoiceSession(options: Options) {
       return () => { listeners.delete(listener); };
     },
     start,
+    setTranscriptionPaused,
+    setMicMuted,
     ask() {
       if (!onDemand || !state.sonioxReady || state.phase !== 'recording' || state.paused) return;
+      if (options.getQuestionMeeting && !plansSearch) {
+        patch({error:'서버를 최신 버전으로 업데이트한 뒤 AI에게 질문해 주세요. 전사는 계속됩니다.'});
+        return;
+      }
       const at = time();
-      if (!send({type:'ask',timeMs:at,context:options.getContext()})) return;
+      const meeting = recordingDetails();
+      if (!send({type:'ask',timeMs:at,...(meeting ? {
+        planSearch:true, meeting,
+      } : {context:options.getContext()})})) return;
       engaged = true;
       generation++;
       outputBlocked = false;
@@ -576,7 +644,7 @@ export function createVoiceSession(options: Options) {
     async resume() {
       if (!state.paused || finishTask || disposed) return;
       await endTask;
-      patch({paused:false});
+      patch({paused:false,micMuted:false});
       open();
     },
     async reconnect() {
@@ -591,7 +659,7 @@ export function createVoiceSession(options: Options) {
         const flushed = await closeStream();
         const saved = await retrySave();
         if (!saved) finishTask = undefined;
-        patch({phase:'finished',paused:false,playback:false,partials:[]});
+        patch({phase:'finished',paused:false,transcriptionPaused:false,micMuted:false,playback:false,partials:[]});
         return {flushed,saved};
       });
       return finishTask;

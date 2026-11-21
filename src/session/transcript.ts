@@ -5,11 +5,12 @@ type Piece = { key: string; text: string; start: number; end: number };
 type Segment = { pieces: Piece[]; turn: Turn };
 type Change = { partials: Turn[]; turns: Turn[] };
 
-export type SonioxToken = { text?: unknown; is_final?: unknown; start_ms?: unknown; end_ms?: unknown; speaker?: unknown };
+export type SonioxToken = { text?: unknown; is_final?: unknown; start_ms?: unknown; end_ms?: unknown; speaker?: unknown; questionAudio?: boolean };
 export type LiveEvent = { type?: unknown; event_id?: unknown; delta?: unknown; start_ms?: unknown; end_ms?: unknown };
 
 const validTime = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const isPunctuation = (text: string) => /^[\p{P}\s]*$/u.test(text);
 
 export function sonioxTranscript() {
   let stream = '';
@@ -18,14 +19,14 @@ export function sonioxTranscript() {
   let watermark = 0;
 
   return {
-    receive(streamId: string, offsetMs: number, tokens: SonioxToken[], sectionAt: (time: number) => Section): Change {
+    receive(streamId: string, offsetMs: number, tokens: SonioxToken[], sectionAt: (time: number, token: SonioxToken) => Section): Change {
       if (stream !== streamId) {
         stream = streamId;
         groups = [];
         sealed = false;
         watermark = 0;
       }
-      const positions = new Map<number, number>();
+      const positions = new Map<string, number>();
       const changed = new Map<string, Turn>();
       let partials: Turn[] = [];
       const update = (index: number, group: Segment, pieces: Piece[]) => {
@@ -43,26 +44,29 @@ export function sonioxTranscript() {
         const start = validTime(token.start_ms) ? token.start_ms : watermark;
         const end = validTime(token.end_ms) ? Math.max(start, token.end_ms) : start;
         const timeMs = offsetMs + start;
-        const section = sectionAt(timeMs);
+        const section = sectionAt(timeMs, token);
         const speaker = typeof token.speaker === 'string' && token.speaker ? token.speaker : undefined;
         // Soniox diarization labels are local to a stream, not identities shared with the meeting.
         const speakerId = !speaker || section === 'personal' ? undefined :
           `${section === 'followup' ? 'followup' : 'meeting'}:${streamId}:${speaker}`;
         const base = { role: section === 'personal' ? 'user' as const : 'speaker' as const, section, timeMs, speakerId };
+        const punctuation = isPunctuation(token.text);
         if (token.is_final !== true) {
           const previous = partials.at(-1);
           if (previous?.speakerId === speakerId && previous?.section === section) {
             partials = [...partials.slice(0, -1), { ...previous, text: previous.text + token.text }];
-          } else {
+          } else if (!punctuation) {
             partials = [...partials, { ...base, id: `preview-${stream}-${start}-${partials.length}`, text: token.text }];
           }
           continue;
         }
-        const occurrence = positions.get(start) ?? 0;
-        positions.set(start, occurrence + 1);
-        const key = `${start}-${occurrence}`;
+        const position = punctuation ? `mark-${start}` : String(start);
+        const occurrence = positions.get(position) ?? 0;
+        positions.set(position, occurrence + 1);
+        const key = `${position}-${occurrence}`;
         const piece = { key, text: token.text, start, end };
-        const priorIndex = groups.findIndex(group => group.pieces.some(existing => existing.key === key));
+        const sameTurn = (group: Segment) => group.turn.section === section && group.turn.speakerId === speakerId;
+        const priorIndex = groups.findIndex(group => (!punctuation || sameTurn(group)) && group.pieces.some(existing => existing.key === key));
         if (priorIndex !== -1) {
           const group = groups[priorIndex];
           update(priorIndex, group, group.pieces.map(existing => existing.key === key ? piece : existing));
@@ -70,18 +74,21 @@ export function sonioxTranscript() {
         }
         // shortcut: final Soniox tokens are sent once in order; ignore late replays beyond the 30-second correction buffer.
         if (start < watermark - 30_000) continue;
-        watermark = Math.max(watermark, end);
         const previous = groups.at(-1);
         const last = previous?.pieces.at(-1);
-        if (!sealed && previous && last && previous.turn.section === section && previous.turn.speakerId === speakerId
-          && start >= last.start && start - last.end < 1_500 && timeMs - previous.turn.timeMs < 15_000) {
+        const lateMark = punctuation && validTime(token.start_ms) && /^[\s.?!…。？！]+$/u.test(token.text) &&
+          last && Math.abs(start - last.end) <= 120;
+        const canAttach = !punctuation || !!speakerId || section === 'personal';
+        if ((!sealed || lateMark) && canAttach && previous && last && sameTurn(previous)
+          && start >= last.start && start - last.end < 1_500 && (punctuation || timeMs - previous.turn.timeMs < 15_000)) {
           update(groups.length - 1, previous, [...previous.pieces, piece]);
-        } else {
+        } else if (!punctuation) {
           const turn = { ...base, id: `soniox-${stream}-${key}`, text: token.text };
           groups = [...groups, { pieces: [piece], turn }];
           if (turn.text.trim()) changed.set(turn.id, turn);
-        }
-        sealed = false;
+        } else continue;
+        watermark = Math.max(watermark, end);
+        if (!punctuation) sealed = false;
       }
       groups = groups.filter(group => (group.pieces.at(-1)?.end ?? 0) >= watermark - 30_000);
       return { turns: [...changed.values()], partials };

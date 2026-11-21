@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNotesExport } from './export.ts';
+import { buildNoteExport, buildNotesExport, noteFolderName, readableTranscript } from './export.ts';
 import { createRecord, type RecordData } from './model.ts';
 
 function files(bytes: Uint8Array) {
@@ -63,4 +63,33 @@ test('one day uses one date and a missing summary still yields an independent Ma
   assert.equal(archive.filename,'sitenote_(2026-11-03).zip');
   assert.equal(files(archive.bytes).get('sitenote_(2026-11-03)_요약.md'),'저장된 요약이 없습니다.\n');
   assert.throws(() => buildNotesExport([]), /내보낼/);
+});
+
+test('single-note Markdown and folder name use the local date and readable title', () => {
+  const record: RecordData = {
+    ...note('private-record-001', 3, '회의: 현장/작업?'),
+    speakers:{'meeting:private-session:1':'테스트 화자'},
+    turns:[
+      {id:'private-turn',section:'meeting',role:'speaker',speakerId:'meeting:private-session:1',timeMs:4000,
+        text:'안전 점검을 했습니다. [record:private-record-001#private-turn]\n<!-- sitenote-turn {"id":"secret"} -->'},
+    ],
+    summary:'## 요약\n- 점검 완료. [record:private-record-001#private-turn]',
+  };
+  const {filename, markdown} = buildNoteExport(record);
+  assert.equal(filename, '20261103_회의 현장 작업.md');
+  assert.equal(noteFolderName(record), '20261103_회의 현장 작업');
+  assert.match(markdown, /### 00:00:04 · 테스트 화자 \\\(화자 1\\\)/u);
+  assert.match(markdown, /점검 완료/u);
+  assert.doesNotMatch(markdown, /sitenote-turn|private-|<a |기록 ID/u);
+  assert.ok(Buffer.byteLength(noteFolderName({...record, title:'회의😀'.repeat(100)})) <= 180);
+});
+
+test('imported document transcript is the Markdown body with its existing headings', () => {
+  const record: RecordData = {
+    ...note('imported', 3, '업로드 파일'), originalFilename:'업로드 파일.docx',
+    turns:[{id:'import-1',section:'meeting',role:'speaker',timeMs:0,text:'# 원래 제목\n\n내용 A'},
+      {id:'import-2',section:'meeting',role:'speaker',timeMs:1,text:'내용 B'}],
+  };
+  assert.equal(readableTranscript(record), '# 원래 제목\n\n내용 A\n\n내용 B');
+  assert.doesNotMatch(buildNoteExport(record).markdown, /화자|### 00:/u);
 });

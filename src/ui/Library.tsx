@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import { Pressable, ScrollView, Switch, Text, View } from 'react-native';
-import { speakerGroups, speakerLabel as recordSpeakerLabel, type Evidence, type RecordData, type Turn } from '../records/core';
+import { speakerGroups, speakerLabel as recordSpeakerLabel, summarySourceAnchor, summarySourceEvidence, type Evidence, type RecordData, type Turn } from '../records/core';
 import { summaryWithSpeakerNames } from '../records/summary-speakers';
 import { currentQuotedRefs } from '../recordContext';
 import { citationParts } from '../workflow';
@@ -60,7 +60,7 @@ export function Home({records, connected, start, open, goSearch, goSettings, sta
     </View>
     {addDocument && (!adding ? <Button label="노트 추가" variant="primary" disabled={working} onPress={() => setAdding(true)}/> : <View style={styles.card}>
       <Text style={styles.heading}>회의 문서 가져오기</Text>
-      <Text style={styles.small}>MD, TXT, DOCX, HWP, HWPX를 기기에서 변환합니다. AI가 참고할 때 관련 문서의 일부가 답변 요청에 포함될 수 있습니다.</Text>
+      <Text style={styles.small}>MD, TXT, DOCX, HWP, HWPX, 텍스트 PDF를 기기에서 변환합니다. AI가 참고할 때 관련 문서의 일부가 답변 요청에 포함될 수 있습니다.</Text>
       <Field label="프로젝트 (선택)" value={documentProject} onChangeText={setDocumentProject} maxLength={120}/>
       <View style={styles.row}>
         <Button label={working ? '가져오는 중…' : '파일 선택'} variant="primary" disabled={working} onPress={() => {
@@ -105,15 +105,15 @@ export function RichText({value, refs, jump}: {value: string; refs: Map<string, 
 }
 
 export function evidenceRefs(evidence: readonly Evidence[], jump: Jump) {
-  return new Map(evidence.map(item => [item.reference, () => jump(item.recordId, item.turnId)]));
+  return new Map(evidence.map(item => [item.reference, () => jump(item.recordId, item.targetId ?? item.turnId)]));
 }
 
-export function EvidenceList({items, jump, title = '답변에 제공한 원문'}: {items: Evidence[]; jump: Jump; title?: string}) {
+function SourceList({items, jump, title}: {items: Evidence[]; jump: Jump; title: string}) {
   if (!items.length) return null;
   return <View style={styles.card}>
     <Text accessibilityRole="header" style={styles.heading}>{title}</Text>
     {items.map(item => <Pressable key={item.reference} accessibilityRole="link"
-      onPress={() => jump(item.recordId, item.turnId)} style={{paddingVertical: 10, minHeight: 48}}>
+      onPress={() => jump(item.recordId, item.targetId ?? item.turnId)} style={{paddingVertical: 10, minHeight: 48}}>
       <Text style={[styles.body, {color: color.primary, fontWeight: '800'}]}>{item.title} ↗</Text>
       <Text style={styles.small}>{dateLabel(item.createdAt)}{item.originalFilename ? ' · 가져온 문서' : item.timeMs !== undefined ? ' · ' + clock(item.timeMs) : ' · 요약'}</Text>
       <Text numberOfLines={2} style={styles.small}>{item.text}</Text>
@@ -121,10 +121,17 @@ export function EvidenceList({items, jump, title = '답변에 제공한 원문'}
   </View>;
 }
 
+export function EvidenceList({items, jump, title = '답변에 제공한 원문'}: {items: Evidence[]; jump: Jump; title?: string}) {
+  return <>
+    <SourceList items={items.filter(item => !item.summaryOnly)} jump={jump} title={title}/>
+    <SourceList items={items.filter(item => item.summaryOnly)} jump={jump} title="요약에만 있는 내용"/>
+  </>;
+}
+
 export function AnswerSources({items, quoted, jump}: {items: Evidence[]; quoted: ReadonlySet<string>; jump: Jump}) {
   return <>
-    <EvidenceList items={items.filter(item => quoted.has(item.reference))} jump={jump} title="답변이 직접 인용한 원문"/>
-    <EvidenceList items={items.filter(item => !quoted.has(item.reference))} jump={jump}/>
+    <SourceList items={items.filter(item => !item.summaryOnly && quoted.has(item.reference))} jump={jump} title="답변이 직접 인용한 원문"/>
+    <EvidenceList items={items.filter(item => item.summaryOnly || !quoted.has(item.reference))} jump={jump}/>
   </>;
 }
 
@@ -136,16 +143,26 @@ export function TurnCard({turn, record, highlight = false, partial = false, onRe
   const document = record.originalFilename && turn.id.startsWith('import-');
   const attached = sources.filter(source => turn.sourceRefs?.includes(source.reference));
   const quoted = new Set(currentQuotedRefs(turn,attached));
+  const corrected = !partial && turn.role !== 'ai' && turn.correctedText !== turn.text ? turn.correctedText : undefined;
+  const [showRaw, setShowRaw] = useState(highlight);
+  useEffect(() => { if (highlight) setShowRaw(true); }, [highlight]);
   return <View style={[styles.card, turn.role === 'ai' && {backgroundColor: '#EEF5DF'},
       highlight && {borderColor: color.primary, borderWidth: 2}, partial && {opacity: 0.7}]}>
     <View style={[styles.between, {flexWrap: 'wrap'}]}>
-      <Text style={styles.label}>{speaker}{document ? '' : ' · ' + clock(turn.timeMs)}{partial ? ' · 전사 중' : ''}{turn.interrupted ? ' · 중단됨' : ''}</Text>
+      <Text style={styles.label}>{speaker}{document ? '' : ' · ' + clock(turn.timeMs)}{partial ? ' · 전사 중' : ''}{turn.interrupted ? ' · 중단됨' : ''}{corrected ? ' · AI 보정' : ''}</Text>
       {onRename && turn.speakerId && <Button label="화자 이름" onPress={() => onRename(turn.speakerId!)}/>}
     </View>
     {turn.role === 'ai' ? <>
       <RichText value={turn.text} refs={jump ? evidenceRefs(attached.filter(item => quoted.has(item.reference)), jump) : new Map()}/>
       {jump && attached.length > 0 && <AnswerSources items={attached} quoted={quoted} jump={jump}/>}
-    </> : <Text selectable style={styles.body}>{turn.text}</Text>}
+    </> : <Text selectable style={styles.body}>{corrected || turn.text}</Text>}
+    {corrected && <>
+      <Pressable accessibilityRole="button" accessibilityState={{expanded:showRaw}} onPress={() => setShowRaw(value => !value)}
+        style={{alignSelf:'flex-start',minHeight:44,justifyContent:'center'}}>
+        <Text style={[styles.label,{textDecorationLine:'underline'}]}>{showRaw ? '보정 전 원문 닫기' : '보정 전 원문 보기'}</Text>
+      </Pressable>
+      {showRaw && <Text selectable style={styles.body}>{turn.text}</Text>}
+    </>}
     {document && openOriginal && <Button label="원본 파일 열기" onPress={openOriginal}/>}
   </View>;
 }
@@ -176,10 +193,12 @@ function SpeakerNames({record, working, rename}: {record: RecordData; working: b
 
 const sections = {personal: '개인 대화', meeting: '회의 원문', 'meeting-ai': '회의 중 AI 질의응답', followup: '회의 후 보완 대화'};
 
-export function Details({record, focus, back, update, remove, exportOne, audioFiles, exportAudio, rename, summary, followup, supplement, refs, sources, jump, working, status, openOriginal}: {
+export function Details({record, focus, back, update, remove, exportOne, audioFiles, exportAudio, rename, summary,
+  correctTranscript, followup, supplement, refs, sources, jump, working, status, openOriginal}: {
   record: RecordData; focus?: string; back: () => void;
   update: (fields: Pick<RecordData, 'title'|'project'|'allowInMeetings'>) => Promise<void>;
   remove: () => void; exportOne: () => void; rename: (id: string) => void; summary: () => void;
+  correctTranscript?: () => void;
   followup: () => void; supplement: SupplementActions; refs: Map<string, () => void>; working: boolean; status?: string;
   sources: Evidence[]; jump: Jump;
   openOriginal: () => void;
@@ -189,16 +208,17 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
   const [title, setTitle] = useState(record.title);
   const [project, setProject] = useState(record.project || '');
   const [excludedFromMeetings, setExcludedFromMeetings] = useState(!record.allowInMeetings);
-  const [tab, setTab] = useState<'summary'|'transcript'|'followup'>(focus ? 'transcript' : 'summary');
+  const summaryTarget = focus && (focus === 'summary' || summarySourceAnchor.test(focus));
+  const [tab, setTab] = useState<'summary'|'transcript'|'followup'>(focus && !summaryTarget ? 'transcript' : 'summary');
   const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
   const [showAudio, setShowAudio] = useState(false);
   const positions = useRef<Record<string, number>>({});
   useEffect(() => {
-    if (focus) {
+    if (focus && !summaryTarget) {
       setTab('transcript');
       if (positions.current[focus] !== undefined) scroll.current?.scrollTo({y: positions.current[focus], animated: true});
     } else setTab('summary');
-  }, [record.id, focus]);
+  }, [record.id, focus, summaryTarget]);
   const visible = tab === 'followup' ? record.turns.filter(turn => turn.section === 'followup') : record.turns;
   const meeting = record.kind === 'meeting' && !record.originalFilename;
   return <>
@@ -211,12 +231,17 @@ export function Details({record, focus, back, update, remove, exportOne, audioFi
         <Button label="원문" variant={tab === 'transcript' ? 'primary' : 'outline'} onPress={() => setTab('transcript')} disabled={working}/>
         {meeting && <Button label="보완 대화" variant={tab === 'followup' ? 'primary' : 'outline'} onPress={() => setTab('followup')} disabled={working}/>}
       </View>
+      {correctTranscript && <View style={styles.card}>
+        <Button label="전사 보정" onPress={() => {setTab('transcript'); correctTranscript();}} disabled={working}/>
+        <Text style={styles.small}>전사 보정을 누르면 이 기록의 발언을 OpenAI에 보냅니다. 보정 전 원문은 그대로 보관합니다.</Text>
+      </View>}
       {meeting && <View style={tab === 'followup' ? undefined : {display:'none'}}>
         <Supplement record={record} actions={supplement} working={working}/>
       </View>}
       {status && <Notice text={status}/>}
       <SpeakerNames record={record} working={working} rename={rename}/>
       {tab === 'summary' ? <View style={styles.card}>
+        {focus && summarySourceEvidence(record,focus) && <Text style={styles.label}>요약에만 있는 내용 · 원문에서 확인되지 않았습니다.</Text>}
         {record.summary ? <RichText value={summaryWithSpeakerNames(record) ?? record.summary} refs={refs}/> : <Text style={styles.body}>저장된 요약이 없습니다.</Text>}
         {!!record.questions?.length && <><Text style={styles.heading}>확인할 사항</Text>{record.questions.map((question, index) =>
           <Text key={index} style={styles.body}>• {question}</Text>)}</>}

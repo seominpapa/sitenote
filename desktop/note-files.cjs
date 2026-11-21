@@ -1,18 +1,16 @@
 const {
-  constants,
-  copyFile,
   lstat,
   mkdir,
-  mkdtemp,
   open,
   readFile,
   readdir,
   rename,
+  rmdir,
   rm,
   writeFile,
 } = require('node:fs/promises');
 const { lstatSync, readFileSync, renameSync, rmSync } = require('node:fs');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { basename, extname, isAbsolute, join } = require('node:path');
 
 const storageName = 'Sitenote';
@@ -27,8 +25,7 @@ function absolutePath(value, name) {
 }
 
 function validId(value) {
-  if (typeof value !== 'string' || !value || value.length > 512
-      || value === '.' || value === '..' || /[\\/\0]/.test(value)) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)) {
     throw new TypeError('note id is invalid');
   }
   return value;
@@ -38,9 +35,16 @@ function noteKey(id) {
   return Buffer.from(validId(id)).toString('base64url');
 }
 
+function validFolderName(value) {
+  return typeof value === 'string' && /^\d{8}_[^\\/:*?"<>|\p{Cc}]+$/u.test(value) &&
+    !/[ .]$/.test(value) && Buffer.byteLength(value) <= 180;
+}
+
 function validEntry(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new TypeError('note entry is invalid');
   validId(entry.id);
+  if (!validFolderName(entry.folderName)) throw new TypeError('note folder name is invalid');
+  if (entry.imported !== undefined && entry.imported !== true) throw new TypeError('note import flag is invalid');
   if (typeof entry['transcript.md'] !== 'string') throw new TypeError('transcript.md must be a string');
   if (entry['summary.md'] !== undefined && typeof entry['summary.md'] !== 'string') {
     throw new TypeError('summary.md must be a string');
@@ -50,7 +54,7 @@ function validEntry(entry) {
 
 function validFilename(filename) {
   if (typeof filename !== 'string' || !filename || filename === '.' || filename === '..'
-      || filename !== basename(filename) || /[\\/\0]/.test(filename) || /^\.latest(?:$|[.-])/.test(filename)) {
+      || filename !== basename(filename) || /[\\/:\p{Cc}]/u.test(filename) || /^\.latest(?:$|[.-])/.test(filename)) {
     throw new TypeError('original filename is invalid');
   }
   return filename;
@@ -119,58 +123,147 @@ async function existingRoot(parent) {
   }
 }
 
-async function recoverNote(target) {
-  const backup = `${target}.old`;
-  let hasTarget = false;
-  let hasBackup = false;
-  try { await directory(target); hasTarget = true; } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  try { await directory(backup); hasBackup = true; } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (hasTarget && hasBackup) await rm(backup, { recursive: true });
-  else if (!hasTarget && hasBackup) await rename(backup, target);
-  return hasTarget || hasBackup;
+async function statIfPresent(path) {
+  try { return await lstat(path); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 
-async function sourceFrom(root, id) {
-  if (!root) return;
-  const notes = join(root, 'notes');
-  const folder = join(notes, noteKey(id));
-  const path = join(folder, 'source.md');
+async function replaceFile(path, value, exclusive = false) {
+  if (exclusive) {
+    const handle = await open(path,'wx',0o600);
+    try { await handle.writeFile(value); }
+    catch (error) {
+      await handle.close().catch(() => {});
+      await rm(path,{force:true});
+      throw error;
+    }
+    await handle.close();
+    return;
+  }
+  const temp = `${path}.${randomUUID()}.tmp`;
   try {
-    await directory(notes);
-    if (!await recoverNote(folder)) return;
-    await regularFile(path);
-    return await readFile(path, 'utf8');
-  } catch (error) {
-    if (error.code === 'ENOENT') return;
-    throw error;
+    await writeFile(temp, value, {flag:'wx', mode:0o600});
+    await rename(temp, path);
+  } finally { await rm(temp, {force:true}); }
+}
+
+const digest = (value) => createHash('sha256').update(value).digest('hex');
+const identity = (stat) => `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+const publicFiles = { notes:['transcript.md', 'summary.md'], originals:['original.txt'] };
+
+async function readProjection(index, id) {
+  const path = join(index, noteKey(id) + '.json');
+  const stat = await statIfPresent(path);
+  if (!stat) return;
+  if (!stat.isFile()) throw new Error('Invalid note folder index');
+  const item = JSON.parse(await readFile(path, 'utf8'));
+  if (!validFolderName(item.requested) || !(item.name === item.requested ||
+      (item.name?.startsWith(item.requested + '-') && /^\d{1,5}$/.test(item.name.slice(item.requested.length + 1))))) {
+    throw new Error('Invalid note folder index');
+  }
+  return item;
+}
+
+async function ownsFile(path, hash) {
+  const stat = await statIfPresent(path);
+  return typeof hash === 'string' && stat?.isFile() && stat.nlink === 1 &&
+    stat.size <= 64_000_000 && digest(await readFile(path)) === hash;
+}
+
+async function ownsFolder(path, entry) {
+  const stat = await statIfPresent(path);
+  return entry && stat?.isDirectory() && identity(stat) === entry.identity;
+}
+
+async function cleanProjection(root, previous, branch) {
+  const managed = previous?.[branch];
+  if (!managed) return;
+  const parent = join(root,branch);
+  await directory(parent);
+  const path = join(parent,previous.name);
+  if (!await ownsFolder(path, managed)) return;
+  for (const name of publicFiles[branch]) {
+    const file = join(path,name);
+    if (await ownsFile(file, managed.files[name])) await rm(file);
+  }
+  await rmdir(path).catch(error => { if (!['ENOENT','ENOTEMPTY','EEXIST'].includes(error.code)) throw error; });
+}
+
+async function useProjection(root, entry, previous) {
+  if (previous?.requested === entry.folderName &&
+      await ownsFolder(join(root,'notes',previous.name),previous.notes) &&
+      (!entry.imported || await ownsFolder(join(root,'originals',previous.name),previous.originals))) {
+    for (const branch of entry.imported ? ['notes','originals'] : ['notes']) {
+      for (const name of publicFiles[branch]) {
+        const file = join(root,branch,previous.name,name);
+        if (await statIfPresent(file) && !await ownsFile(file, previous[branch].files[name])) return;
+      }
+    }
+    return previous;
   }
 }
 
-async function writeNote(root, entry, source) {
-  const notes = join(root, 'notes');
-  await directory(notes);
-  const target = join(notes, noteKey(entry.id));
-  const hadTarget = await recoverNote(target);
-  const retainedSource = source === undefined && hadTarget ? await sourceFrom(root, entry.id) : source;
-  const stage = await mkdtemp(join(notes, `.tmp-${noteKey(entry.id)}-`));
-  const backup = `${target}.old`;
-  try {
-    await writeFile(join(stage, 'transcript.md'), entry['transcript.md'], { flag: 'wx' });
-    if (entry['summary.md'] !== undefined) {
-      await writeFile(join(stage, 'summary.md'), entry['summary.md'], { flag: 'wx' });
-    }
-    if (retainedSource !== undefined) await writeFile(join(stage, 'source.md'), retainedSource, { flag: 'wx' });
-    if (hadTarget) await rename(target, backup);
+async function newProjection(root, entry) {
+  for (let counter = 1; counter <= 10000; counter++) {
+    const name = counter === 1 ? entry.folderName : `${entry.folderName}-${counter}`;
+    const notes = join(root,'notes',name);
+    const originals = join(root,'originals',name);
+    const collisions = await Promise.all([statIfPresent(notes),statIfPresent(originals)]);
+    if (collisions.some(stat => stat?.isSymbolicLink())) throw new Error('Refusing symbolic link in note folders');
+    if (collisions.some(Boolean)) continue;
+    try { await mkdir(notes, {mode:0o700}); }
+    catch (error) { if (error.code === 'EEXIST') continue; throw error; }
     try {
-      await rename(stage, target);
+      if (entry.imported) await mkdir(originals, {mode:0o700});
+      const owned = async path => ({identity:identity(await lstat(path)), files:{}});
+      return {name,requested:entry.folderName,notes:await owned(notes),...(entry.imported && {originals:await owned(originals)})};
     } catch (error) {
-      if (hadTarget) await rename(backup, target);
-      throw error;
+      await rmdir(notes);
+      if (error.code !== 'EEXIST') throw error;
     }
-    if (hadTarget) await rm(backup, { recursive: true });
+  }
+  throw new Error('Too many matching note folders');
+}
+
+async function writeProjectionFiles(root, projection, branch, contents) {
+  const target = join(root,branch,projection.name);
+  const managed = projection[branch];
+  if (!await ownsFolder(target,managed)) throw new Error('Note folder changed while saving');
+  const files = {};
+  for (const name of publicFiles[branch]) {
+    const path = join(target,name);
+    const old = await statIfPresent(path);
+    if (old && !await ownsFile(path,managed.files[name])) throw new Error('Note file changed while saving');
+    if (contents[name] === undefined) {
+      if (old) await rm(path);
+    } else {
+      files[name] = digest(contents[name]);
+      if (!old || files[name] !== managed.files[name]) await replaceFile(path, contents[name], !old);
+    }
+  }
+  return {...managed,files};
+}
+
+async function writeNote(root, index, entry) {
+  const previous = await readProjection(index,entry.id);
+  const projection = await useProjection(root,entry,previous) ?? await newProjection(root,entry);
+  let progress = projection;
+  try {
+    progress = {...progress,notes:await writeProjectionFiles(root,projection,'notes',{
+      'transcript.md':entry['transcript.md'], 'summary.md':entry.imported ? undefined : entry['summary.md'],
+    })};
+    if (entry.imported) progress = {...progress,originals:await writeProjectionFiles(root,projection,'originals',{'original.txt':entry['transcript.md']})};
+    await replaceFile(join(index,noteKey(entry.id)+'.json'),JSON.stringify(progress));
   } catch (error) {
-    await rm(stage, { recursive: true, force: true });
+    if (projection !== previous) {
+      await cleanProjection(root,progress,'notes').catch(() => {});
+      await cleanProjection(root,progress,'originals').catch(() => {});
+    }
     throw error;
+  }
+  if (previous && previous.name !== projection.name) {
+    await cleanProjection(root,previous,'notes');
+    await cleanProjection(root,previous,'originals');
   }
 }
 
@@ -240,7 +333,7 @@ async function archive(root, id, filename, value) {
       }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
-      const handle = await open(path, 'wx');
+      const handle = await open(path, 'wx', 0o600);
       try {
         await handle.writeFile(value);
         await handle.sync();
@@ -256,49 +349,33 @@ async function archive(root, id, filename, value) {
   }
 }
 
-async function copyOriginals(fromRoot, toRoot) {
-  if (!fromRoot || fromRoot === toRoot) return;
-  const source = join(fromRoot, 'originals');
-  await directory(source);
-  for (const key of await readdir(source)) {
-    const sourceFolder = join(source, key);
-    await directory(sourceFolder);
-    const targetFolder = join(toRoot, 'originals', key);
-    await directory(targetFolder, true);
-    const copiedNames = new Map();
-    const latest = await recoverLatest(sourceFolder);
-    for (const name of await readdir(sourceFolder)) {
-      if (/^\.latest(?:$|[.-])/.test(name)) continue;
-      const sourceFile = join(sourceFolder, name);
-      await regularFile(sourceFile);
-      const bytes = await readFile(sourceFile);
-      for (let sequence = 1; ; sequence += 1) {
-        const candidate = join(targetFolder, collisionName(name, sequence));
-        try {
-          await regularFile(candidate);
-          if ((await readFile(candidate)).equals(bytes)) {
-            copiedNames.set(name, basename(candidate));
-            break;
-          }
-        } catch (error) {
-          if (error.code !== 'ENOENT') throw error;
-          try {
-            await copyFile(sourceFile, candidate, constants.COPYFILE_EXCL);
-          } catch (copyError) {
-            if (copyError.code !== 'EEXIST') await rm(candidate, { force: true });
-            throw copyError;
-          }
-          copiedNames.set(name, basename(candidate));
-          break;
-        }
-      }
-    }
-    if (latest) {
-      const latestName = validFilename((await readFile(latest, 'utf8')).trim());
-      if (!copiedNames.has(latestName)) throw new Error(`Invalid original archive metadata: ${latest}`);
-      await recordLatest(targetFolder, copiedNames.get(latestName));
-    }
+async function originalAt(root, id) {
+  if (!root) return;
+  const originals = join(root,'originals');
+  const folder = join(originals,noteKey(id));
+  try {
+    await directory(root);
+    await directory(originals);
+    await directory(folder);
+    const latest = await recoverLatest(folder);
+    if (!latest) return;
+    const name = validFilename((await readFile(latest,'utf8')).trim());
+    const path = join(folder,name);
+    await regularFile(path);
+    return path;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
   }
+}
+
+async function indexFor(profile, root) {
+  await directory(profile,true);
+  const indices = join(profile,'note-projections');
+  await directory(indices,true);
+  const stat = await lstat(root);
+  const index = join(indices,digest(identity(stat)));
+  await directory(index,true);
+  return index;
 }
 
 function createNoteFiles({ profile, defaultFolder }) {
@@ -306,6 +383,7 @@ function createNoteFiles({ profile, defaultFolder }) {
   absolutePath(defaultFolder, 'defaultFolder');
   const config = join(profile, 'note-files.json');
   const configBackup = `${config}.old`;
+  const rawArchive = join(profile,'note-documents');
   let folder = defaultFolder;
   try {
     let hasConfig = false;
@@ -361,14 +439,12 @@ function createNoteFiles({ profile, defaultFolder }) {
     const ids = new Set(entries.map((entry) => entry.id));
     if (ids.size !== entries.length || deletedIds.some((id) => ids.has(id))) throw new TypeError('duplicate note id');
     const root = await prepareRoot(folder);
-    for (const entry of entries) await writeNote(root, entry);
+    const index = await indexFor(profile,root);
+    for (const entry of entries) await writeNote(root,index,entry);
     for (const id of deletedIds) {
-      const target = join(root, 'notes', noteKey(id));
-      try {
-        if (await recoverNote(target)) await rm(target, { recursive: true });
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
+      const previous = await readProjection(index,id);
+      if (previous) await cleanProjection(root,previous,'notes');
+      await rm(join(index,noteKey(id)+'.json'),{force:true});
     }
   }
 
@@ -380,62 +456,43 @@ function createNoteFiles({ profile, defaultFolder }) {
     if (ids.size !== snapshotEntries.length) throw new TypeError('duplicate note id');
     const oldRoot = await existingRoot(folder);
     const nextRoot = await prepareRoot(next);
-    await copyOriginals(oldRoot, nextRoot);
+    const index = await indexFor(profile,nextRoot);
     for (const entry of snapshotEntries) {
-      await writeNote(nextRoot, entry, await sourceFrom(oldRoot, entry.id));
+      if (oldRoot !== nextRoot && entry.imported && !await originalAt(rawArchive,entry.id)) {
+        const legacy = await originalAt(oldRoot,entry.id);
+        if (legacy) await saveOriginal(entry.id,basename(legacy),await readFile(legacy));
+      }
+      await writeNote(nextRoot,index,entry);
     }
     await persist(next);
     folder = next;
     return { folder };
   }
 
-  async function saveImport(entry, filename, bytes, markdown) {
+  async function saveOriginal(id, filename, bytes) {
+    await directory(profile,true);
+    await directory(rawArchive,true);
+    await directory(join(rawArchive,'originals'),true);
+    return archive(rawArchive,id,filename,bytes);
+  }
+
+  async function saveImport(entry, filename, bytes) {
     validEntry(entry);
     validFilename(filename);
     if (!(bytes instanceof Uint8Array)) throw new TypeError('original bytes must be a Uint8Array');
-    if (typeof markdown !== 'string') throw new TypeError('converted Markdown must be a string');
     const root = await prepareRoot(folder);
-    const originalFolder = join(root, 'originals', noteKey(entry.id));
-    let firstImport = false;
-    try { await directory(originalFolder); }
-    catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      await mkdir(originalFolder, {mode:0o700});
-      firstImport = true;
-    }
-    try {
-      const path = await archive(root, entry.id, filename, Buffer.from(bytes));
-      await writeNote(root, entry, markdown);
-      return { path };
-    } catch (error) {
-      if (firstImport) await rm(originalFolder, {recursive:true,force:true}).catch(() => {});
-      throw error;
-    }
+    const index = await indexFor(profile,root);
+    const path = await saveOriginal(entry.id,filename,Buffer.from(bytes));
+    await writeNote(root,index,{...entry,imported:true});
+    return {path};
   }
 
   async function revealOriginal(id) {
-    const key = noteKey(id);
-    const root = await existingRoot(folder);
-    if (!root) return;
-    const originals = join(root, 'originals');
-    await directory(originals);
-    const originalFolder = join(originals, key);
-    try {
-      await directory(originalFolder);
-      const latest = await recoverLatest(originalFolder);
-      if (!latest) return;
-      await regularFile(latest);
-      const name = validFilename((await readFile(latest, 'utf8')).trim());
-      const path = join(originalFolder, name);
-      await regularFile(path);
-      return path;
-    } catch (error) {
-      if (error.code === 'ENOENT') return;
-      throw error;
-    }
+    validId(id);
+    return await originalAt(rawArchive,id) ?? originalAt(await existingRoot(folder),id);
   }
 
   return { status, chooseFolder, sync, saveImport, revealOriginal };
 }
 
-module.exports = { createNoteFiles };
+module.exports = { createNoteFiles, validFolderName };

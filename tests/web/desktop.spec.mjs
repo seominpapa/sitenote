@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
-import { parseTranscript } from '../../src/records/markdown.ts';
+import { ordinaryQuestionPlan } from './voice-plan.mjs';
 
 const pcm = Buffer.alloc(960).toString('base64');
 const recorded = '납기 변경 내용을 기록합니다.';
@@ -29,6 +29,7 @@ test('starts personal recording on Soniox, invites GPT once, then keeps recordin
   const audioInput = [];
   let classified = false;
   const server = createApp({
+    planQuestion: ordinaryQuestionPlan,
     webRoot: process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
     webKeysFile: join(tmp, 'keys.json'),
     accessToken: 'test-only-not-a-real-access-token',
@@ -177,6 +178,7 @@ test('starts personal recording on Soniox, invites GPT once, then keeps recordin
     expect(markdown).toContain(aiReply);
     expect(markdown).toContain(resumedRecording);
     expect(markdown.split(question)).toHaveLength(2);
+    expect(markdown).not.toMatch(/<!-- sitenote-|allowInMeetings|\[record:/);
     const recordSettings = page.getByText('기록 설정', {exact:true});
     const meetingOptOut = page.getByRole('checkbox', {name:'회의에서 이 개인 기록 참고하지 않음', exact:true});
     const saveSettings = async () => {
@@ -191,19 +193,16 @@ test('starts personal recording on Soniox, invites GPT once, then keeps recordin
     await recordSettings.click();
     await expect(meetingOptOut).toBeVisible();
     await expect(meetingOptOut).not.toBeChecked();
-    expect(parseTranscript(markdown).allowInMeetings).toBe(true);
     await meetingOptOut.check();
     await page.getByLabel('분류', {exact:true}).fill('업무 / 공급망');
     await saveSettings();
     await reopenSettings();
     await expect(meetingOptOut).toBeChecked();
-    expect(parseTranscript(await exportMarkdown()).allowInMeetings).toBe(false);
     await meetingOptOut.uncheck();
     await saveSettings();
     await reopenSettings();
     await expect(meetingOptOut).toBeVisible();
     await expect(meetingOptOut).not.toBeChecked();
-    expect(parseTranscript(await exportMarkdown()).allowInMeetings).toBe(true);
     await page.getByRole('button', {name:'Sitenote 홈'}).click();
     await page.getByLabel('개인 대화 제목', {exact:true}).fill(secondTitle);
     await page.getByRole('button', {name:'개인 대화 시작'}).click();

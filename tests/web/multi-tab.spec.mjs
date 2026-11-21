@@ -54,7 +54,7 @@ test('voice search respects sharing switched off in another tab during recording
       stream = socket;
       socket.onMessage(raw => {
         const data = JSON.parse(raw);
-        if (data.type === 'start') socket.send(JSON.stringify({type:'ready', scope:'meeting'}));
+        if (data.type === 'start') socket.send(JSON.stringify({type:'ready', scope:'meeting', plansSearch:true}));
         if (data.type === 'ask') socket.send(JSON.stringify({type:'ready', scope:'live'}));
         if (data.type === 'search_result') received.push(data);
       });
@@ -70,7 +70,8 @@ test('voice search respects sharing switched off in another tab during recording
     await page.getByRole('button', {name:'회의 시작', exact:true}).click();
     await page.getByRole('button', {name:'AI에게 질문', exact:true}).click();
     await expect(page.getByTestId('voice-status')).toHaveText(/지금 질문하세요/);
-    const ask = id => stream.send(JSON.stringify({type:'search', id, query:'방수막 재시험 언제였나요?'}));
+    const ask = id => stream.send(JSON.stringify({type:'search', id, query:'방수막 재시험 언제였나요?',
+      plan:{scope:'general',range:'topic',terms:'방수막 재시험',sameProject:false}}));
     ask('before-revocation');
     await expect.poll(() => received.find(m => m.id === 'before-revocation')?.context).toContain('[record:past#past-turn]');
     stream.send(JSON.stringify({type:'live', streamId:'answer-1', offsetMs:1, refs:['[record:past#past-turn]'],

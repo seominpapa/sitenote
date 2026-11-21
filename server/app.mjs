@@ -9,6 +9,7 @@ import { createKeyStore, parseKeys } from './keys.mjs';
 import { categoryResult, validCategories } from './categories.mjs';
 import { typedFollowupResult, validTypedFollowup } from './typed-followup.mjs';
 import { validVoicePreview, voicePreview } from './voice-preview.mjs';
+import { transcriptCorrectionResult, validTranscriptCorrectionRequest } from './transcript-corrections.mjs';
 
 const digest = (secret) => createHash('sha256').update(secret).digest();
 const maxBytes = 200_000;
@@ -17,6 +18,7 @@ const textRoutes = new Map([
   ['/answer', { size:maxBytes, valid:data => validTextRequest('/answer', data), result:(data, options) => textResult('/answer', data, options) }],
   ['/categories', { size:110_000, rate:10, valid:validCategories, result:categoryResult }],
   ['/followup', { size:58_000, rate:12, valid:validTypedFollowup, result:typedFollowupResult }],
+  ['/transcript-corrections', { size:55_000, rate:20, valid:validTranscriptCorrectionRequest, result:transcriptCorrectionResult }],
 ]);
 
 function json(res, status, body) {

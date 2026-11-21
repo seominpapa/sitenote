@@ -3,6 +3,7 @@ export type Turn = {
   section: 'personal' | 'meeting' | 'meeting-ai' | 'followup';
   role: 'user' | 'ai' | 'speaker';
   text: string;
+  correctedText?: string;
   timeMs: number;
   speakerId?: string;
   entry?: 'typed-question' | 'typed-answer';
@@ -28,18 +29,30 @@ export type RecordData = {
 };
 
 export const safeId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+export const isTranscribedTurn = (turn: Turn) => turn.id.startsWith('soniox-') && turn.role !== 'ai' && !turn.entry;
+export const transcriptText = (turn: Turn) => turn.correctedText ?? turn.text;
 export const sections = ['personal', 'meeting', 'meeting-ai', 'followup'] as const;
 export const roles = ['user', 'ai', 'speaker'] as const;
 export const isOriginalFilename = (value: unknown): value is string => typeof value === 'string' &&
-  value.length <= 255 && /^[^/\\:\p{Cc}]+\.(?:md|markdown|txt|docx|hwp|hwpx)$/iu.test(value);
+  value.length <= 255 && /^[^/\\:\p{Cc}]+\.(?:md|markdown|txt|docx|hwp|hwpx|pdf)$/iu.test(value);
 const categoryLabel = /^[^/\\\p{Cc}\u2028\u2029]+$/u;
+export const summarySourceAnchor = /^summary-only-[0-9a-f]{8}$/;
 
-export function parseOriginalSourceRef(value: unknown): {recordId: string; turnId: string} | undefined {
+export function parseSourceRef(value: unknown): {recordId: string; turnId: string} | undefined {
   if (typeof value !== 'string' || value.length > 266) return;
   const match = /^\[record:([^#]+)#([^\]]+)\]$/.exec(value);
   if (!match || match[0] !== value) return;
   const [,recordId,turnId] = match;
   if (safeId.test(recordId) && safeId.test(turnId) && turnId !== 'summary') return {recordId,turnId};
+}
+
+export function parseOriginalSourceRef(value: unknown) {
+  const ref = parseSourceRef(value);
+  if (ref && !summarySourceAnchor.test(ref.turnId)) return ref;
+}
+
+export function isSourceRef(value: unknown): value is string {
+  return parseSourceRef(value) !== undefined;
 }
 
 export function isOriginalSourceRef(value: unknown): value is string {
@@ -82,21 +95,23 @@ export function createRecord({ id, kind, title, project, now = new Date().toISOS
 
 export function assertTurn(turn: Turn): void {
   assertId(turn.id);
-  if (turn.id === 'summary' || !sections.includes(turn.section) || !roles.includes(turn.role) ||
+  if (turn.id === 'summary' || summarySourceAnchor.test(turn.id) || !sections.includes(turn.section) || !roles.includes(turn.role) ||
     typeof turn.text !== 'string' || !Number.isFinite(turn.timeMs) || turn.timeMs < 0 ||
     (turn.speakerId !== undefined && (typeof turn.speakerId !== 'string' || turn.speakerId.length > 128)) ||
     (turn.interrupted !== undefined && typeof turn.interrupted !== 'boolean')) {
     throw Error('발언 데이터가 올바르지 않습니다.');
   }
+  if (turn.correctedText !== undefined && (!isTranscribedTurn(turn) || typeof turn.correctedText !== 'string' ||
+    turn.correctedText.length > 1800 || !turn.correctedText.trim())) throw Error('보정된 전사 형식이 올바르지 않습니다.');
   assertEntry(turn, turn.entry);
   const refs = turn.sourceRefs;
   if (refs !== undefined && (turn.role !== 'ai' || !Array.isArray(refs) || refs.length > 2 ||
-    !Array.from(refs).every(isOriginalSourceRef) || new Set(refs).size !== refs.length)) {
+    !Array.from(refs).every(isSourceRef) || new Set(refs).size !== refs.length)) {
     throw Error('AI 발언 출처가 올바르지 않습니다.');
   }
   const quotes = turn.quotedRefs;
   if (quotes !== undefined && (turn.role !== 'ai' || !Array.isArray(quotes) || quotes.length > 2 ||
-    !refs || !Array.from(quotes).every(ref => refs.includes(ref)) || new Set(quotes).size !== quotes.length)) {
+    !refs || !Array.from(quotes).every(ref => isOriginalSourceRef(ref) && refs.includes(ref)) || new Set(quotes).size !== quotes.length)) {
     throw Error('AI 인용 출처가 올바르지 않습니다.');
   }
 }
@@ -115,6 +130,7 @@ export function applyTurn(record: RecordData, turn: Turn, now = new Date().toISO
   const entry = turn.entry ?? previous?.entry;
   assertEntry(turn, entry);
   const text = turn.text.replace(/\r\n?/g, '\n');
+  const correctedText = turn.correctedText ?? (previous?.text === text ? previous.correctedText : undefined);
   const timeMs = previous?.timeMs ?? Math.round(turn.timeMs);
   const interrupted = previous?.interrupted || turn.interrupted;
   const refs = role === 'ai' ? turn.sourceRefs ?? previous?.sourceRefs : undefined;
@@ -122,10 +138,11 @@ export function applyTurn(record: RecordData, turn: Turn, now = new Date().toISO
   const verified = new Set([...(previous?.quotedRefs ?? []), ...(turn.quotedRefs ?? [])]);
   const quotes = sourceRefs?.filter(ref => verified.has(ref));
   const quotedRefs = quotes?.length ? quotes : undefined;
-  if (previous && previous.text === text && previous.section === section && previous.role === role &&
+  if (previous && previous.text === text && previous.correctedText === correctedText && previous.section === section && previous.role === role &&
     previous.speakerId === speakerId && previous.interrupted === interrupted && previous.entry === entry &&
     previous.sourceRefs?.join() === sourceRefs?.join() && previous.quotedRefs?.join() === quotedRefs?.join()) return record;
   const next: Turn = { id, section, role, text, timeMs,
+    ...(correctedText !== undefined && {correctedText}),
     ...(speakerId !== undefined ? { speakerId } : {}), ...(interrupted !== undefined ? { interrupted } : {}), ...(entry ? {entry} : {}),
     ...(sourceRefs ? {sourceRefs:[...sourceRefs]} : {}), ...(quotedRefs ? {quotedRefs} : {}) };
   const turns = previous ? record.turns.map(item => item.id === id ? next : item) : [...record.turns, next];

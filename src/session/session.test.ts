@@ -8,16 +8,19 @@ function setup(mode: 'meeting' | 'personal' | 'followup', overrides: {
   failSave?: boolean; rejectSearch?: boolean; startDelay?: Promise<void>; stopDelay?: Promise<void>; searchDelay?: Promise<string>;
   playReply?: (value: string) => Promise<void>;
   voice?: AiVoice;
+  planSearch?: boolean;
 } = {}) {
   const sockets: Array<ReturnType<typeof fakeSocket>> = [];
   const written = new Map<string, Turn>();
   const listeners: Record<string, (event: never) => void> = {};
   const native = { started: 0, stopped: 0, played: [] as string[], cutoff: 0 };
+  const scriptedMute: boolean[] = [];
   let failure = !!overrides.failSave;
   let now = 10_000;
   const audio = {
     async startCapture() { native.started++; await overrides.startDelay; },
     async stopCapture() { native.stopped++; await overrides.stopDelay; },
+    setMicMuted(muted: boolean) { scriptedMute.push(muted); },
     async play(value: string) { native.played.push(value); await overrides.playReply?.(value); },
     async stopPlayback() { native.cutoff++; },
     addListener<K extends keyof AudioEvents>(name: K, callback: (event: AudioEvents[K]) => void) {
@@ -28,6 +31,7 @@ function setup(mode: 'meeting' | 'personal' | 'followup', overrides: {
   const session = createVoiceSession({
     baseUrl:'https://sitenote.local', token:'user-token', mode, audio, timeMs:() => now, voice:overrides.voice,
     getContext:() => '최근 원문',
+    ...(overrides.planSearch && {getQuestionMeeting:() => ({title:'현장 일정'})}),
     connect(url, token) {
       assert.equal(url, 'wss://sitenote.local/stream');
       assert.equal(token, 'user-token');
@@ -45,7 +49,7 @@ function setup(mode: 'meeting' | 'personal' | 'followup', overrides: {
     finishTimeoutMs: 30,
   });
   return {
-    session, written, sockets, native,
+    session, written, sockets, native, scriptedMute,
     setTime(value: number) { now = value; },
     recoverStorage() { failure = false; },
     mic(payload: AudioEvents['onAudio']) { listeners.onAudio?.(payload as never); },
@@ -79,6 +83,145 @@ const live = (eventType: string, id: string, delta: string, start_ms = 0) => ({
 });
 const speaker = (start_ms: number, text: string, id = '2') => ({ type:'soniox', streamId:'meeting-0', offsetMs:10_000,
   tokens:[{ start_ms,end_ms:start_ms + 80,text,is_final:true,speaker:id }] });
+
+test('voice question keeps recording on an old server and rejects search without a model plan', async t => {
+  const {session,sockets,mic} = setup('meeting',{planSearch:true});
+  t.after(() => session.dispose());
+  session.start();
+  const socket = sockets[0];
+  socket.open();
+  socket.receive({type:'ready',scope:'meeting'});
+  session.ask();
+  assert.match(session.getSnapshot().error ?? '',/서버를 최신 버전/);
+  assert.equal(session.getSnapshot().phase,'recording');
+  assert.ok(!socket.sent.some(message => message.type === 'ask'));
+  mic({audio:'AQI='});
+  assert.equal(socket.sent.at(-1)?.type,'audio');
+  socket.receive({type:'ready',scope:'meeting',plansSearch:true});
+  session.ask();
+  assert.deepEqual(socket.sent.at(-1),{type:'ask',timeMs:10_000,planSearch:true,meeting:{title:'현장 일정'}});
+  socket.receive({type:'ready',scope:'live'});
+  socket.receive({type:'search',id:'stale',query:'지난번 얘기'});
+  await tick();
+  assert.ok(!socket.sent.some(message => message.id === 'stale'));
+});
+
+test('pausing meeting transcription preserves capture and keeps explicitly invited AI separate', async t => {
+  const {session,sockets,native,scriptedMute,written,setTime,mic} = setup('meeting');
+  t.after(() => session.dispose());
+  session.start();
+  const socket = sockets[0];
+  socket.open();
+  socket.receive({type:'ready',scope:'meeting'});
+  await tick();
+  mic({audio:'AQI='});
+  session.setTranscriptionPaused(true);
+  assert.equal(session.getSnapshot().transcriptionPaused,true);
+  assert.equal(session.getSnapshot().paused,false);
+  assert.deepEqual(scriptedMute,[false], 'meeting transcription pause does not silence the local archive');
+  assert.deepEqual(socket.sent.at(-1),{type:'transcription_pause',paused:true});
+  mic({audio:'AQI='});
+  assert.deepEqual(socket.sent.at(-1),{type:'audio',audio:'AAA=',suppressed:true});
+
+  setTime(11_000);
+  session.ask();
+  socket.receive({type:'ready',scope:'live'});
+  mic({audio:'AQI='});
+  assert.deepEqual(socket.sent.at(-1),{type:'audio',audio:'AQI='});
+  // The question's media clock can lag wall time. Server-tagged AI audio remains a separate turn.
+  const pauseQuestion = speaker(900,'AI에 질문');
+  socket.receive({...pauseQuestion,tokens:pauseQuestion.tokens.map(token => ({...token,questionAudio:true}))});
+  socket.receive(speaker(100,'중지 버튼을 누르기 전에 한 말'));
+  session.leave();
+  session.setTranscriptionPaused(false);
+  mic({audio:'AQI='});
+  socket.receive(speaker(2_000,'다시 녹취'));
+  await tick();
+  assert.equal(native.started,1);
+  assert.equal(native.stopped,0);
+  assert.deepEqual([...written.values()].map(({text,section}) => [text,section]), [
+    ['AI에 질문','meeting-ai'],
+    ['중지 버튼을 누르기 전에 한 말','meeting'],
+    ['다시 녹취','meeting'],
+  ]);
+});
+
+test('manual mic mute leaves AI audio playing and sends no speech or barge-in', async t => {
+  const {session,sockets,native,scriptedMute,mic,playback} = setup('meeting');
+  t.after(() => session.dispose());
+  session.start();
+  const socket = sockets[0];
+  socket.open();
+  socket.receive({type:'ready',scope:'meeting'});
+  await tick();
+  session.ask();
+  socket.receive({type:'ready',scope:'live'});
+  socket.receive({type:'audio',audio:'voice'});
+  playback(true);
+  const stopped = native.cutoff;
+
+  session.setMicMuted(true);
+  assert.equal(session.getSnapshot().transcriptionPaused,false);
+  assert.deepEqual(scriptedMute,[false,true]);
+  mic({audio:'AQI=',bargeIn:true});
+  socket.receive({type:'audio',audio:'rest of voice'});
+  await tick();
+  assert.deepEqual(native.played,['voice','rest of voice']);
+  assert.equal(native.cutoff,stopped);
+  assert.equal(session.getSnapshot().playback,true);
+  assert.equal(socket.sent.some(item => item.type === 'interrupt' || item.type === 'finish'),false);
+  assert.deepEqual(socket.sent.at(-1),{type:'audio',audio:'AAA=',suppressed:true});
+
+  session.setMicMuted(false);
+  mic({audio:'AQI=',bargeIn:true});
+  assert.equal(socket.sent.at(-2)?.type,'interrupt');
+  assert.deepEqual(socket.sent.at(-1),{type:'audio',audio:'AQI='});
+});
+
+test('reconnecting a meeting keeps transcription paused until the user resumes it', async t => {
+  const {session,sockets,mic} = setup('meeting');
+  t.after(() => session.dispose());
+  session.start();
+  sockets[0].open();
+  sockets[0].receive({type:'ready',scope:'meeting'});
+  await tick();
+  session.setTranscriptionPaused(true);
+  sockets[0].io.close();
+  await session.reconnect();
+  sockets[1].open();
+  assert.equal(sockets[1].sent[0].transcriptionPaused,true);
+  assert.equal(session.getSnapshot().transcriptionPaused,true);
+  sockets[1].receive({type:'ready',scope:'meeting'});
+  mic({audio:'AQI='});
+  assert.deepEqual(sockets[1].sent.at(-1),{type:'audio',audio:'AAA=',suppressed:true});
+});
+
+test('personal transcription can pause without muting the mic, and follow-up does not expose that pause', async t => {
+  const personal = setup('personal');
+  const followup = setup('followup');
+  t.after(() => { personal.session.dispose(); followup.session.dispose(); });
+  for (const {session,sockets} of [personal,followup]) {
+    session.start();
+    sockets[0].open();
+    await tick();
+    sockets[0].receive({type:'ready',scope:'meeting'});
+    session.setTranscriptionPaused(true);
+  }
+  assert.equal(followup.session.getSnapshot().transcriptionPaused,false);
+  assert.equal(followup.sockets[0].sent.some(message => message.type === 'transcription_pause'),false);
+  assert.equal(personal.session.getSnapshot().transcriptionPaused,true);
+  assert.equal(personal.session.getSnapshot().micMuted,false);
+  personal.mic({audio:'AQI='});
+  assert.deepEqual(personal.sockets[0].sent.at(-1),{type:'audio',audio:'AAA=',suppressed:true});
+
+  personal.session.ask();
+  personal.mic({audio:'AQI='});
+  assert.deepEqual(personal.sockets[0].sent.at(-1),{type:'audio',audio:'AQI='});
+  personal.session.leave();
+  personal.session.setTranscriptionPaused(false);
+  personal.mic({audio:'AQI='});
+  assert.deepEqual(personal.sockets[0].sent.at(-1),{type:'audio',audio:'AQI='});
+});
 
 test('the microphone permission dialog does not pause a session that has not started capturing', async () => {
   let grant!: () => void;

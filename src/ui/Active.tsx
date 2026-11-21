@@ -1,6 +1,6 @@
 import { useRef, type ComponentRef } from 'react';
 import { Modal, ScrollView, Text, View } from 'react-native';
-import type { Evidence, RecordData } from '../records/core';
+import { summarySourceEvidence, type Evidence, type RecordData } from '../records/core';
 import type { createVoiceSession } from '../session/session';
 import { Button, color, Notice, styles } from './base';
 import { EvidenceList, type Jump, RichText, TurnCard } from './Library';
@@ -29,9 +29,11 @@ export function Active({session, snapshot, mode, record, evidence, jump, finish,
     : followup === 'judging' ? '방금 답변으로 확인할 내용이 충분한지 보고 있습니다.'
     : followup === 'waiting' ? '질문에 답해 주세요.' : undefined;
   const title = mode === 'meeting' ? '회의 전사' : mode === 'followup' ? '회의 후 보완 대화' : '개인 음성 대화';
+  const pausedLabel = mode === 'meeting' ? '회의 전사 일시정지' : '개인 대화 전사 일시정지';
   const stored = record.turns.filter(turn => mode === 'followup' ? turn.section === 'followup' : true).slice(-80);
   const shown = [...stored, ...snapshot.partials.filter(p => !stored.some(t => t.id === p.id))];
   const selected = source?.record.turns.find(turn => turn.id === source.turnId);
+  const summary = source?.turnId && summarySourceEvidence(source.record, source.turnId);
   return <>
     <View style={[styles.content, {paddingTop: 12, paddingBottom: 10, gap: 8}]}>
       <View style={{backgroundColor: color.dark, padding: 16, borderRadius: 20, gap: 7}}>
@@ -40,17 +42,25 @@ export function Active({session, snapshot, mode, record, evidence, jump, finish,
         <Text accessibilityLiveRegion="polite" style={[styles.small, {color: color.accent}]}>
           {snapshot.paused ? '○ 마이크 일시정지' : !snapshot.capturing && (phase === 'recording' || inAI)
             ? '○ 마이크 준비 중' : inAI && !snapshot.liveReady ? '○ AI 음성 연결 중'
-              : (snapshot.capturing ? '● ' : '○ ') + (followupStatus || labels[phase])}
+              : (snapshot.capturing ? '● ' : '○ ') + (followupStatus || (!inAI && snapshot.transcriptionPaused && phase === 'recording' ? pausedLabel : labels[phase]))}
+          {inAI && snapshot.transcriptionPaused ? ' · ' + pausedLabel : ''}
+          {snapshot.micMuted ? ' · 마이크 중지' : ''}
           {snapshot.playback ? ' · AI 음성 재생 중' : ''}
         </Text>
         <Text style={[styles.small, {color: '#D9E8DD'}]}>{snapshot.saving ? '원문 저장 중…' : snapshot.saveError ? '원문 저장 재시도 필요' : '확정 원문은 기기에 저장됩니다'}</Text>
       </View>
       <View style={styles.row}>
         {mode !== 'followup' && (inAI ? <Button label="AI 질의응답 끝내기" onPress={() => session.leave()}/>
-          : <Button label="AI에게 질문" variant="accent" disabled={phase !== 'recording' || !snapshot.capturing || snapshot.paused} onPress={() => session.ask()}/>)}
+          : <Button label="AI에게 질문" variant="accent" disabled={phase !== 'recording' || !snapshot.capturing || snapshot.paused || snapshot.micMuted} onPress={() => session.ask()}/>)}
         {unavailable ? <Button label="다시 연결" onPress={() => session.reconnect()}/>
-          : <Button label={snapshot.paused ? '마이크 다시 켜기' : '마이크 일시정지'} disabled={phase === 'finishing' || phase === 'finished'}
-              onPress={() => snapshot.paused ? session.resume() : session.pause()}/>}
+          : <Button label={snapshot.paused || snapshot.micMuted ? '마이크 재개' : '마이크 중지'}
+              disabled={phase === 'finishing' || phase === 'finished' || (!snapshot.capturing && !snapshot.paused)}
+              onPress={() => snapshot.paused ? session.resume() : session.setMicMuted(!snapshot.micMuted)}/>}
+        {mode !== 'followup' && <Button label={mode === 'meeting'
+          ? snapshot.transcriptionPaused ? '회의재개' : '회의중지'
+          : snapshot.transcriptionPaused ? '전사재개' : '전사중지'}
+          disabled={unavailable || !snapshot.sonioxReady || phase === 'finishing' || phase === 'finished'}
+          onPress={() => session.setTranscriptionPaused(!snapshot.transcriptionPaused)}/>}
         {(mode === 'followup' || inAI) && <Button label="AI 음성 중단" disabled={!snapshot.playback && phase !== 'responding'}
           onPress={() => session.interrupt()}/>}
         {mode === 'followup' && <Button label="이 질문 건너뛰기" disabled={!snapshot.capturing || !snapshot.liveReady ||
@@ -82,7 +92,9 @@ export function Active({session, snapshot, mode, record, evidence, jump, finish,
       <View style={[styles.safe, {paddingTop: 32}]}><ScrollView contentContainerStyle={styles.content}>
         <View style={styles.row}><Button label="근거 닫기" onPress={closeSource}/></View>
         {source && <><Text style={styles.heading}>{source.record.title}</Text>{selected
-          ? <TurnCard turn={selected} record={source.record} highlight openOriginal={openOriginal}/> : <Text style={styles.body}>{source.record.summary || '저장된 구간을 찾을 수 없습니다.'}</Text>}</>}
+          ? <TurnCard turn={selected} record={source.record} highlight openOriginal={openOriginal}/>
+          : summary ? <><Text style={styles.label}>요약에만 있는 내용</Text><Text style={styles.body}>{summary.text}</Text></>
+            : <Text style={styles.body}>저장된 구간을 찾을 수 없습니다.</Text>}</>}
       </ScrollView></View>
     </Modal>
   </>;

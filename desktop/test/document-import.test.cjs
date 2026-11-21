@@ -3,6 +3,7 @@ const { execFileSync } = require('node:child_process');
 const CFB = require('cfb');
 const { deflateRawSync } = require('node:zlib');
 const { test } = require('node:test');
+const { pdf, scanPdf } = require('./pdf-fixtures.cjs');
 
 const {
   convertDocument,
@@ -95,18 +96,29 @@ function utf16be(text) {
 }
 
 test('exports the local document types exposed by the desktop picker', () => {
-  assert.deepEqual(documentExtensions, ['txt', 'md', 'markdown', 'docx', 'hwpx', 'hwp', 'doc']);
+  assert.deepEqual(documentExtensions, ['txt', 'md', 'markdown', 'docx', 'hwpx', 'hwp', 'pdf', 'doc']);
   assert.ok(maxDocumentBytes >= 1024 * 1024);
   assert.equal(maxDocumentTextLength, 250_000);
+});
+
+test('reads a text-layer PDF and reports scan-only pages separately from invalid PDFs', async () => {
+  const text = pdf('BT /F1 14 Tf 40 200 Td (Meeting minutes) Tj 0 -22 Td (Follow-up notes) Tj ET');
+  assert.equal(await convertDocument('minutes.PDF', text), 'Meeting minutes\nFollow-up notes');
+  const korean = pdf('BT /F1 14 Tf 40 200 Td <000100020003> Tj 0 -22 Td <000400010002> Tj ET', true);
+  assert.equal(await convertDocument('한글.pdf', korean), '회의록\n한회의');
+  await assert.rejects(convertDocument('scan.pdf', scanPdf()), /image-only PDF/);
+  await assert.rejects(convertDocument('invalid.pdf', Buffer.from('arbitrary text')), /invalid PDF/);
 });
 
 test('loads and converts Uint8Array without a global Buffer', () => {
   const modulePath = require.resolve('../../src/records/document-converter.cjs');
   const hwpBase64 = hwp({text: 'Hermes 한글'}).toString('base64');
-  const script = `global.Buffer=undefined;global.process=undefined;const c=require(${JSON.stringify(modulePath)});`
+  const pdfBase64 = pdf('BT /F1 14 Tf 40 200 Td <000100020003> Tj ET', true, true).toString('base64');
+  const script = `global.Buffer=undefined;global.process=undefined;global.DecompressionStream=undefined;const c=require(${JSON.stringify(modulePath)});`
     + `const h=Uint8Array.from(atob(${JSON.stringify(hwpBase64)}),x=>x.charCodeAt(0));`
-    + `Promise.all([c.convertDocument('note.md',Uint8Array.from([35,32,111,107])),c.convertDocument('note.hwp',h)])`
-    + `.then(v=>{if(v[0]!=='# ok'||v[1]!=='Hermes 한글')throw Error('wrong conversion')});`;
+    + `const p=Uint8Array.from(atob(${JSON.stringify(pdfBase64)}),x=>x.charCodeAt(0));`
+    + `Promise.all([c.convertDocument('note.md',Uint8Array.from([35,32,111,107])),c.convertDocument('note.hwp',h),c.convertDocument('note.pdf',p)])`
+    + `.then(v=>{if(v[0]!=='# ok'||v[1]!=='Hermes 한글'||v[2]!=='회의록')throw Error('wrong conversion')});`;
   execFileSync(process.execPath, ['-e', script]);
 });
 
@@ -162,7 +174,7 @@ test('rejects oversized, encrypted, malformed and unsupported documents explicit
   await assert.rejects(convertDocument('encrypted.docx', encrypted), /encrypted|암호/i);
   await assert.rejects(convertDocument('bad.docx', Buffer.from('not a zip')), /invalid|올바른/i);
   await assert.rejects(convertDocument('legacy.doc', Buffer.from('legacy')), /unsupported|지원하지/i);
-  await assert.rejects(convertDocument('notes.pdf', Buffer.from('pdf')), /unsupported|지원하지/i);
+  await assert.rejects(convertDocument('notes.odt', Buffer.from('odt')), /unsupported|지원하지/i);
   await assert.rejects(convertDocument('', Buffer.from('text')), /filename/i);
   await assert.rejects(convertDocument('notes.txt', 'not bytes'), /bytes/i);
   await assert.rejects(convertDocument('empty.txt', Buffer.alloc(0)), /image-only|텍스트/i);

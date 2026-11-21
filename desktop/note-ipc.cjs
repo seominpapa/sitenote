@@ -4,15 +4,17 @@ const { lstat, open } = require('node:fs/promises');
 const { basename, extname } = require('node:path');
 const { ownedPage } = require('./runtime.cjs');
 const { convertDocument, documentExtensions, maxDocumentBytes, maxDocumentTextLength } = require('./document-import.cjs');
+const { validFolderName } = require('./note-files.cjs');
 
 const noteId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 const documentTypes = documentExtensions.filter(type => type !== 'doc');
 const validFilename = name => name.length <= 255 && !/[\\/:\p{Cc}]/u.test(name) &&
   documentTypes.includes(extname(name).slice(1).toLowerCase());
 const validEntry = value => value && typeof value === 'object' && !Array.isArray(value) && noteId(value.id) &&
+  validFolderName(value.folderName) && (value.imported === undefined || value.imported === true) &&
   typeof value['transcript.md'] === 'string' && value['transcript.md'].length <= 16_000_000 &&
   (value['summary.md'] === undefined || (typeof value['summary.md'] === 'string' && value['summary.md'].length <= 1_000_000)) &&
-  Object.keys(value).every(key => ['id', 'transcript.md', 'summary.md'].includes(key));
+  Object.keys(value).every(key => ['id', 'folderName', 'imported', 'transcript.md', 'summary.md'].includes(key));
 const validEntries = items => Array.isArray(items) && items.length <= 20_000 && items.every(validEntry);
 const validDeletion = items => Array.isArray(items) && items.length <= 20_000 && items.every(noteId);
 const invalid = () => Error('허용되지 않는 노트 저장 요청입니다.');
@@ -20,7 +22,7 @@ const sizeMessage = '파일은 20MB, 변환할 본문은 25만 자까지 가져�
 
 async function readSelectedDocument(path) {
   const filename = basename(path);
-  if (!validFilename(filename)) throw Error('MD, TXT, DOCX, HWP 또는 HWPX 파일을 선택해 주세요.');
+  if (!validFilename(filename)) throw Error('MD, TXT, DOCX, HWP, HWPX 또는 PDF 파일을 선택해 주세요.');
   const selected = await lstat(path);
   if (!selected.isFile() || selected.isSymbolicLink()) throw Error('일반 문서 파일을 선택해 주세요.');
   if (selected.size > maxDocumentBytes) throw Error(sizeMessage);
@@ -46,6 +48,7 @@ function importError(error) {
   if (error?.code === 'DOCUMENT_IMPORT_ERROR') {
     if (/too large/.test(message)) return Error(sizeMessage);
     if (/protected|encrypted/.test(message)) return Error('암호가 걸렸거나 보호된 문서는 가져올 수 없습니다.');
+    if (/image-only PDF/.test(message)) return Error('스캔 PDF는 지원하지 않습니다. 텍스트를 선택할 수 있는 PDF를 추가해 주세요.');
     if (/image-only|no readable/.test(message)) return Error('읽을 수 있는 본문이 없습니다. 이미지로만 된 문서는 변환할 수 없습니다.');
     return Error('문서를 읽을 수 없습니다. 지원 형식과 파일 상태를 확인해 주세요.');
   }
@@ -78,15 +81,15 @@ function registerNoteIpc(ipc, getWindow, disk, showDialog, reveal) {
         const {filename, bytes} = await readSelectedDocument(result.filePaths[0]);
         const markdown = await convertDocument(filename, bytes);
         const id = randomUUID();
-        draft = {id, filename, bytes, markdown, contents:window.webContents};
+        draft = {id, filename, bytes, contents:window.webContents};
         return {id, filename, markdown};
       } catch (error) { throw importError(error); }
     }, args => !args.length],
     'save-import': [async (window, entry) => {
       if (!draft || draft.contents !== window.webContents || draft.id !== entry.id ||
           entry['transcript.md'].length > maxDocumentTextLength * 4 || entry['summary.md'] !== undefined) throw invalid();
-      const {filename, bytes, markdown} = draft;
-      try { await disk.saveImport(entry, filename, bytes, markdown); }
+      const {filename, bytes} = draft;
+      try { await disk.saveImport(entry, filename, bytes); }
       catch { throw Error('지정한 폴더에 원본 문서를 보관하지 못했습니다. 저장 폴더와 권한을 확인해 주세요.'); }
       finally { draft = undefined; }
     }, args => args.length === 1 && validEntry(args[0])],

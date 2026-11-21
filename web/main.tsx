@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { applyTurn, createRecord, isCategoryPath, parseCategoryPath, renameSpeaker, safeId, searchContext, type RecordData } from '../src/records/core.ts';
-import { analysisContext, liveContext, resolveOriginalSources, searchOriginalAnswers, searchPastOriginals } from '../src/recordContext.ts';
+import { analysisContext, liveContext, lookupPastOriginals, resolveOriginalSources, searchOriginalAnswers } from '../src/recordContext.ts';
+import { buildMeetingRecap, meetingQuestionHistory } from '../src/meeting-history.ts';
 import { importedRecord } from '../src/records/import.ts';
 import { createVoiceSession, type Mode, type Snapshot } from '../src/session/session.ts';
 import { appendTypedFollowup, type TypedPair } from '../src/typedFollowup.ts';
-import { answer, classifyRecords, health, saveKeys, summarize, type Health, type ProviderKeys } from './api.ts';
+import { answer, classifyRecords, correctTranscription, health, saveKeys, summarize, type Health, type ProviderKeys } from './api.ts';
+import { applyTranscriptCorrections, canCorrectTranscript, requestTranscriptCorrections } from '../src/transcript-correction.ts';
 import { createWebAudio } from './audio.ts';
 import { DesktopUpdate } from './desktop-update.tsx';
 import { noteFiles, type NoteFolder } from './note-files.ts';
@@ -21,7 +23,8 @@ type Session = ReturnType<typeof createVoiceSession>;
 type Active = { session: Session; audio: ReturnType<typeof createWebAudio>; id: string; mode: Mode };
 type Page = { name: 'home' | 'search' | 'settings' } | { name: 'detail'; id: string; part?: string; offerFollowup?: boolean; consentAudio?: ConsentAudio; typedFollowup?: boolean };
 type RecordInfo = { title: string; project?: string };
-const idle: Snapshot = { phase: 'idle', paused: false, capturing: false, playback: false, liveReady: false, sonioxReady: false, partials: [], references: [], saving: false };
+const idle: Snapshot = { phase: 'idle', paused: false, transcriptionPaused: false, micMuted: false, capturing: false,
+  playback: false, liveReady: false, sonioxReady: false, partials: [], references: [], saving: false };
 const inactive = () => idle;
 const noSubscribe = () => () => {};
 const voiceProviders = { personal: ['soniox'], meeting: ['soniox'], followup: ['live', 'soniox'] } as const;
@@ -47,7 +50,7 @@ function sourcePage(): Page {
 
 async function lookupAnswer(question: string) {
   const evidence = searchOriginalAnswers(await records.list(), question);
-  if (!evidence.length) return {answer:'관련 있는 사람의 원문을 찾지 못했습니다.', evidence:[]};
+  if (!evidence.length) return {answer:'관련 있는 원문이나 요약을 찾지 못했습니다.', evidence:[]};
   return {...await answer(question, searchContext(evidence)), evidence};
 }
 
@@ -60,6 +63,7 @@ function App() {
   const [aiVoice, setAiVoice] = useState(loadAiVoice);
   const [editorVersion, setEditorVersion] = useState(0);
   const [noteFolder, setNoteFolder] = useState<NoteFolder>();
+  const [documentImportError, setDocumentImportError] = useState('');
   const current = useRef<RecordData[]>([]);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState<Health>();
@@ -264,12 +268,13 @@ function App() {
         if (!existing) await records.create(record);
         publish(record);
         const latest = () => current.current.find(item => item.id === record.id) ?? record;
-        let previousQuery = '';
         const session = createVoiceSession({
           baseUrl: location.origin, token: '', mode, audio, voice: aiVoice,
           connect: url => new WebSocket(url) as unknown as ReturnType<NonNullable<Parameters<typeof createVoiceSession>[0]['connect']>>,
           timeMs: () => Math.max(0, Date.now() - Date.parse(record.createdAt)),
           getContext: () => liveContext(latest(), mode === 'followup').context,
+          getQuestionMeeting: latest,
+          getQuestionHistory: (_query, beforeMs, pending, plan) => meetingQuestionHistory(latest(), beforeMs, pending, plan),
           async persist(turn) {
             const next = await records.update(record.id, fresh => applyTurn(fresh, turn));
             if (!next) {
@@ -281,13 +286,13 @@ function App() {
             }
             publish(next);
           },
-          async search(query) {
+          async search(query,beforeMs,pending,scope,plan) {
+            if (scope === 'current' || plan?.scope === 'current') return '';
             const fresh = await records.list();
-            const latest = fresh.find(item => item.id === record.id);
-            if (!latest) throw Error('회의 기록을 찾을 수 없습니다.');
-            const found = searchPastOriginals(fresh, latest, query, previousQuery);
-            previousQuery = query;
-            return searchContext(found);
+            const activeRecord = fresh.find(item => item.id === record.id);
+            if (!activeRecord) throw Error('회의 기록을 찾을 수 없습니다.');
+            const {evidence,meeting} = lookupPastOriginals(fresh,activeRecord,query,'',beforeMs,pending,plan);
+            return {context:searchContext(evidence),recap:meeting && buildMeetingRecap(meeting)};
           },
         });
         setNotice('');
@@ -361,6 +366,20 @@ function App() {
     }
   }
 
+  function correctTranscript(record: RecordData) {
+    void run(async () => {
+      setNotice('문맥에 맞춰 전사 보정 중…');
+      let count = 0;
+      const edits = await requestTranscriptCorrections(record,correctTranscription);
+      await editRecord(record.id, latest => {
+        const next = applyTranscriptCorrections(latest,edits);
+        count = next.turns.filter((turn,i) => turn !== latest.turns[i]).length;
+        return next;
+      });
+      setNotice(count ? `전사 ${count}개를 보정했습니다. 기존 요약은 다시 만들 수 있습니다.` : '추가로 보정할 발언을 찾지 못했습니다.');
+    });
+  }
+
   function finish() {
     if (!active || pending.current) return;
     // Unlock playback on the click; consent sends no microphone audio before the invitation finishes.
@@ -420,14 +439,19 @@ function App() {
   function importDocument(project: string, close: () => void) {
     void run(async () => {
       setNotice('');
-      const draft = await noteFiles()?.pickDocument();
-      if (!draft) return;
-      const record = importedRecord(draft, project);
-      await saveImportedRecord(record);
-      publish(record);
-      setLibraryView('date');
-      close();
-      setNotice('회의 문서를 노트에 추가했습니다.');
+      setDocumentImportError('');
+      try {
+        const draft = await noteFiles()?.pickDocument();
+        if (!draft) return;
+        const record = importedRecord(draft, project);
+        await saveImportedRecord(record, draft.markdown);
+        publish(record);
+        setLibraryView('date');
+        close();
+        setNotice('회의 문서를 노트에 추가했습니다.');
+      } catch (error) {
+        setDocumentImportError(error instanceof Error ? error.message : '회의 문서를 추가하지 못했습니다.');
+      }
     });
   }
 
@@ -536,6 +560,7 @@ function App() {
     <div className="app-main">
       <main className="shell content">
         {notice && !showLibraryNotice && <p className="notice" role="status">{notice}</p>}
+        {!active && page.name === 'home' && documentImportError && <p className="notice" role="alert">{documentImportError}</p>}
         <DesktopUpdate settings={page.name === 'settings'} visible={!active && (page.name === 'home' || page.name === 'settings')} busy={busy} />
         {!active && page.name === 'settings' && noteFiles() && <section className="summary" aria-labelledby="note-folder">
           <h2 id="note-folder">노트 저장 폴더</h2>
@@ -554,6 +579,7 @@ function App() {
             }} />
           : page.name === 'detail' && record ? <Detail key={`${record.id}:${editorVersion}`} record={record} part={page.part} busy={busy}
             related={evidence}
+            correctTranscript={connected?.providers.text && canCorrectTranscript(record) ? () => correctTranscript(record) : undefined}
             open={open} back={() => navigate({ name: 'home' })} summarize={() => void run(() => saveSummary(record))}
             followup={() => acceptFollowup(record.id, consentAudio)} offerFollowup={!!page.offerFollowup} consentAudio={consentAudio}
             typedFollowup={!!page.typedFollowup} typedAIAvailable={!!connected?.providers.text}

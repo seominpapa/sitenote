@@ -44,7 +44,7 @@ fi
 # Refresh the embedded JavaScript bundle and APK while reusing unchanged native objects.
 (
   cd "$root/android"
-  ./gradlew "${offline[@]}" --no-daemon -PreactNativeArchitectures=arm64-v8a \
+  ./gradlew ${offline[@]+"${offline[@]}"} --no-daemon -PreactNativeArchitectures=arm64-v8a \
     -Pandroid.enableMinifyInReleaseBuilds=true \
     :app:createBundleReleaseJsAndAssets --rerun :app:packageRelease --rerun :app:assembleRelease
 )

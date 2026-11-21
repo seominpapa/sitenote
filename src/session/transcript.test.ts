@@ -30,6 +30,34 @@ test('Soniox tails replace partial previews, persist finalized speech once, and 
   assert.equal(reconnect.turns[0].timeMs, 5_000);
 });
 
+test('Soniox attaches a late closing mark to the same utterance without reopening it or duplicating the mark', () => {
+  const transcript = sonioxTranscript();
+  const receive = (tokens: Parameters<typeof transcript.receive>[2]) => transcript.receive('meeting-1', 0, tokens, () => 'meeting');
+  const first = receive([token('납품 일정입니다', 100, 600), {text:'<end>', is_final:true}]).turns[0];
+  const lateMark = token('.', 600, 600);
+  const punctuated = receive([lateMark]).turns[0];
+  assert.deepEqual(punctuated, {...first, text:'납품 일정입니다.'});
+  assert.deepEqual(receive([lateMark]).turns, []);
+  const next = receive([token('다음 안건입니다.', 800, 1200)]).turns[0];
+  assert.notEqual(next.id, first.id);
+  assert.equal(next.text, '다음 안건입니다.');
+});
+
+test('an isolated punctuation fragment never appears as a Soniox turn or preview', () => {
+  const transcript = sonioxTranscript();
+  const receive = (tokens: Parameters<typeof transcript.receive>[2]) =>
+    transcript.receive('meeting-1', 0, tokens, time => time >= 600 ? 'meeting-ai' : 'meeting');
+  assert.deepEqual(receive([token('...', 0, 0), token('?', 0, 0, '1', false)]), {turns:[],partials:[]});
+  const first = receive([token('회의 기록', 100, 520), {text:'<end>', is_final:true}]).turns[0];
+  for (const mark of [token('.', 520, 520, '2'), token('?', 600, 600), {text:'!',is_final:true},
+    token('.', 900, 900), token('.', 520, 520, '1', false)]) {
+    assert.deepEqual(receive([mark]), {turns:[],partials:[]});
+  }
+  assert.equal(first.text, '회의 기록');
+  assert.equal(receive([token('시험인가요', 650, 900, '2', false), token('?', 900, 900, '2', false)]).partials[0].text,
+    '시험인가요?');
+});
+
 test('GPT Live persists documented deltas once, and ignores duplicate provider input during meeting Q&A', () => {
   const transcript = liveTranscript('meeting-ai');
   assert.deepEqual(transcript.receive('live-1', 2_000, {type:'session.input_transcript.delta', event_id:'ignored', delta:'질문', start_ms:60}).turns, []);

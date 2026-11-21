@@ -1,6 +1,6 @@
 import { quotedReferences } from '../server/voice-quotes.mjs';
-import { isOriginalTurn, parseOriginalSourceRef, recordInScope, searchContext, searchHumanOriginals, searchRecords, speakerDisplayId, turnEvidence,
-  type Evidence, type RecordData, type SearchScope, type Turn } from './records/core.ts';
+import { isOriginalTurn, lookupHumanOriginals, parseSourceRef, pastMeetingIntent, recordInScope, searchContext, searchHumanOriginals, searchRecords, speakerDisplayId, summarySourceEvidence, turnEvidence,
+  type Evidence, type RecordData, type SearchScope, type Turn, type VoiceSearchPlan } from './records/core.ts';
 
 export function scopeFor(record: RecordData): SearchScope {
   return {mode: record.kind, project: record.kind === 'meeting' ? record.project : undefined, currentRecordId: record.id};
@@ -12,8 +12,20 @@ function allowedPastRecords(records: readonly RecordData[], active: RecordData):
   return records.filter(record => record.id !== active.id && record.createdAt <= active.createdAt && recordInScope(record,scope));
 }
 
-export function searchPastOriginals(records: readonly RecordData[], record: RecordData, query: string, previousQuery?: string): Evidence[] {
-  return searchHumanOriginals(allowedPastRecords(records, record), query, previousQuery);
+export function lookupPastOriginals(records: readonly RecordData[], record: RecordData, query: string, previousQuery?: string,
+  beforeMs = Infinity, pending: readonly Turn[] = [], plan?: VoiceSearchPlan) {
+  const allowed = allowedPastRecords(records,record);
+  const identity = {title:record.title,project:record.project};
+  if ((plan?.scope ?? pastMeetingIntent(query)) !== 'related') return lookupHumanOriginals(allowed,query,previousQuery,{...identity,turns:[]},plan);
+  const turns = new Map(record.turns.map(turn => [turn.id,turn]));
+  for (const turn of pending) turns.set(turn.id,turn);
+  return lookupHumanOriginals(allowed,query,previousQuery,{...identity,turns:[...turns.values()].filter(turn =>
+    turn.timeMs < beforeMs && (turn.section === record.kind || record.kind === 'meeting' && turn.section === 'meeting-ai') && isOriginalTurn(turn))},plan);
+}
+
+export function searchPastOriginals(records: readonly RecordData[], record: RecordData, query: string, previousQuery?: string,
+  beforeMs = Infinity, pending: readonly Turn[] = [], plan?: VoiceSearchPlan): Evidence[] {
+  return lookupPastOriginals(records,record,query,previousQuery,beforeMs,pending,plan).evidence;
 }
 
 export function searchOriginalAnswers(records: readonly RecordData[], query: string, previousQuery?: string): Evidence[] {
@@ -24,18 +36,19 @@ export function resolveOriginalSources(records: readonly RecordData[], record: R
   if (!refs.length) return [];
   const allowed = new Map(allowedPastRecords(records, record).map(item => [item.id, item]));
   return [...new Set(refs)].flatMap(ref => {
-    const parts = parseOriginalSourceRef(ref);
+    const parts = parseSourceRef(ref);
     if (!parts) return [];
     const source = allowed.get(parts.recordId);
     const turn = source?.turns.find(candidate => candidate.id === parts.turnId && isOriginalTurn(candidate));
-    return source && turn ? [turnEvidence(source, turn)] : [];
+    const found = source && (turn ? turnEvidence(source, turn) : summarySourceEvidence(source, parts.turnId));
+    return found ? [found] : [];
   });
 }
 
 export function currentQuotedRefs(turn: Turn, sources: readonly Evidence[]): string[] {
   if (turn.role !== 'ai' || !turn.quotedRefs?.length || !turn.sourceRefs?.length) return [];
   const provided = new Set(turn.sourceRefs);
-  const candidates = sources.filter(source => provided.has(source.reference))
+  const candidates = sources.filter(source => !source.summaryOnly && provided.has(source.reference))
     .map(({reference, text}) => ({reference, excerpt:text}));
   const matches = new Set(quotedReferences(turn.text, candidates));
   // The original verification and the current source must agree. A correction only removes attribution.
@@ -53,7 +66,7 @@ export function analysisContext(record: RecordData): string {
     return evidence.reference + '\n' + quote({
       ...header, section: turn.section, role: turn.role, timeMs: turn.timeMs,
       speaker: turn.role === 'speaker' && turn.speakerId ? `화자 ${speakerDisplayId(turn.speakerId)}` : evidence.speaker,
-      interrupted: turn.interrupted, text: turn.text,
+      interrupted: turn.interrupted, text: turn.text, correctedText:turn.correctedText,
     });
   })].join('\n\n');
 }

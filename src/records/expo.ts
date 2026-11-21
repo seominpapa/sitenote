@@ -4,16 +4,14 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import SiteAudio from '../../modules/site-audio/index.ts';
 import { assertId, isOriginalFilename, safeId, type RecordData } from './model.ts';
-import { summaryMarkdown, transcriptMarkdown } from './markdown.ts';
-import { buildNotesExport } from './export.ts';
-import { summaryWithSpeakerNames } from './summary-speakers.ts';
+import { buildNoteExport, buildNotesExport, noteFolderName, readableSummary, readableTranscript } from './export.ts';
 import { createRecordStore, type FileName } from './store.ts';
 import { convertDocument, maxDocumentBytes } from './document-converter.cjs';
 import { importedRecord } from './import.ts';
 
 const directory = () => new Directory(Paths.document, 'records');
 const file = (id: string, name: FileName) => new File(directory(), id, name);
-const sourceFile = (id: string) => new File(directory(), id, 'source.md');
+const documentText = (id: string) => new File(directory(), id, 'document.txt');
 const archives = () => new Directory(Paths.document, 'note-originals');
 const folderKey = 'sitenote-note-folder';
 export type AndroidNoteFolder = {uri: string; label: string};
@@ -28,31 +26,32 @@ function enqueue<T>(task: () => Promise<T>) {
   return next;
 }
 
-async function writeCopy(uri: string, id: string, entry: File, archive = false) {
-  if (entry.exists) await SiteAudio.writeNoteFile(uri, id, entry.name, entry.uri, archive);
+async function readImportedText(record: RecordData) {
+  if (!record.originalFilename) return;
+  const entry = documentText(record.id);
+  if (entry.exists) return entry.text();
+  const legacy = new File(directory(), record.id, 'source.md');
+  if (legacy.exists) return legacy.text();
 }
 
-function copies(id: string, names: FileName[]) {
+async function publishNote(folderUri: string, note: RecordData) {
+  const transcript = readableTranscript(note, await readImportedText(note)) + '\n';
+  const summary = note.originalFilename ? undefined : readableSummary(note);
+  await SiteAudio.publishNoteFiles(folderUri, note.id, noteFolderName(note), transcript,
+    summary ? summary + '\n' : null, Boolean(note.originalFilename));
+}
+
+function copyNote(id: string) {
   if (!folder) return;
   return enqueue(async () => {
-    if (folder) for (const name of names) await writeCopy(folder.uri, id, file(id, name));
+    if (!folder) return;
+    const note = await store.load(id);
+    if (note) await publishNote(folder.uri, note);
   }).catch(() => reportFolderIssue('save'));
 }
 
 async function copyFolder(next: AndroidNoteFolder) {
-  for (const note of await store.list()) {
-    for (const entry of [file(note.id, 'transcript.md'), file(note.id, 'summary.md'), sourceFile(note.id)]) {
-      await writeCopy(next.uri, note.id, entry);
-    }
-  }
-  if (archives().exists) {
-    for (const entry of archives().list()) {
-      if (!(entry instanceof Directory) || !safeId.test(entry.name)) continue;
-      for (const original of entry.list()) {
-        if (original instanceof File && isOriginalFilename(original.name)) await writeCopy(next.uri, entry.name, original, true);
-      }
-    }
-  }
+  for (const note of await store.list()) await publishNote(next.uri, note);
 }
 
 export async function loadAndroidNoteFolder(report: typeof reportFolderIssue) {
@@ -84,6 +83,7 @@ function localImportError(error: unknown) {
   const text = error instanceof Error ? error.message : '';
   if (/too large/.test(text)) return Error('파일은 20MB, 변환할 본문은 25만 자까지 가져올 수 있습니다.');
   if (/protected|encrypted/.test(text)) return Error('암호가 걸렸거나 보호된 문서는 가져올 수 없습니다.');
+  if (/image-only PDF|PDF.*OCR/i.test(text)) return Error('스캔 PDF는 지원하지 않습니다. 텍스트를 선택할 수 있는 PDF를 추가해 주세요.');
   if (/image-only|no readable/.test(text)) return Error('읽을 수 있는 본문이 없습니다. 이미지로만 된 문서는 변환할 수 없습니다.');
   return Error('문서를 읽을 수 없습니다. 지원 형식과 파일 상태를 확인해 주세요.');
 }
@@ -111,11 +111,11 @@ export const recordStore = {
   ...store,
   async save(record: RecordData) {
     await store.save(record);
-    await copies(record.id, ['transcript.md']);
+    await copyNote(record.id);
   },
   async saveSummary(id: string, markdown: string, questions?: readonly string[]) {
     await store.saveSummary(id, markdown, questions);
-    await copies(id, ['summary.md']);
+    await copyNote(id);
   },
   async delete(id: string) {
     await store.delete(id);
@@ -130,7 +130,7 @@ export const recordStore = {
     if (!selected) return;
     const input = new File(selected.cachePath);
     try {
-      if (!isOriginalFilename(selected.filename)) throw Error('MD, TXT, DOCX, HWP 또는 HWPX 파일을 선택해 주세요.');
+      if (!isOriginalFilename(selected.filename)) throw Error('MD, TXT, DOCX, HWP, HWPX 또는 PDF 파일을 선택해 주세요.');
       if (!input.exists || (input.size ?? 0) > maxDocumentBytes) throw Error('가져올 파일을 확인할 수 없습니다.');
       const bytes = await input.bytes();
       const markdown = await Promise.resolve().then(() => convertDocument(selected.filename, bytes)).catch(error => { throw localImportError(error); });
@@ -141,19 +141,14 @@ export const recordStore = {
         archive.create({intermediates:true});
         await input.copy(new File(archive,selected.filename));
         new Directory(directory(), id).create({intermediates:true});
-        await SiteAudio.writeTextAtomic(sourceFile(id).uri, markdown);
+        await SiteAudio.writeTextAtomic(documentText(id).uri, markdown);
         await store.save(record);
       } catch (error) {
         if (archive.exists) archive.delete();
         await store.delete(id);
         throw error;
       }
-      await enqueue(async () => {
-        if (!folder) return;
-        await writeCopy(folder.uri,id,new File(archive,selected.filename),true);
-        await writeCopy(folder.uri,id,sourceFile(id));
-        await writeCopy(folder.uri,id,file(id,'transcript.md'));
-      }).catch(() => reportFolderIssue('save'));
+      await copyNote(id);
       return record;
     } finally {
       try { if (input.exists) input.delete(); } catch { /* Cache cleanup may be retried by the system. */ }
@@ -162,13 +157,16 @@ export const recordStore = {
   async openOriginal(record: RecordData) {
     assertId(record.id);
     if (!isOriginalFilename(record.originalFilename)) throw Error('연결된 원본 파일이 없습니다.');
-    if (folder) {
+    const original = new File(archives(), record.id, record.originalFilename);
+    if (Platform.OS === 'android' && original.exists) {
       try {
-        await SiteAudio.openNoteFile(folder.uri, record.id, record.originalFilename, true);
+        await SiteAudio.openOriginalNote(original.contentUri, record.id, record.originalFilename);
         return;
-      } catch { /* The private original is available even if a folder is disconnected. */ }
+      } catch { /* A native attachment viewer might not be installed. */ }
+    } else if (folder) {
+      await SiteAudio.openLegacyNote(folder.uri, record.id, record.originalFilename);
+      return;
     }
-    const original = new File(archives(),record.id,record.originalFilename);
     if (!original.exists || !await Sharing.isAvailableAsync()) throw Error('이 기기에서 원본 문서를 열 수 없습니다.');
     await Sharing.shareAsync(original.uri,{dialogTitle:'원본 문서 열기'});
   },
@@ -187,10 +185,9 @@ export const recordStore = {
   },
   async export(record: RecordData): Promise<void> {
     if (!await Sharing.isAvailableAsync()) throw Error('이 기기에서 파일을 내보낼 수 없습니다.');
-    const out = new File(Paths.cache, 'Sitenote-내보내기.md');
+    const {filename, markdown} = buildNoteExport(record, await readImportedText(record));
+    const out = new File(Paths.cache, filename);
     out.create({ overwrite: true });
-    const markdown = `${transcriptMarkdown(record)}${record.summary ?
-      `\n## 요약\n\n${summaryMarkdown(summaryWithSpeakerNames(record) ?? record.summary, record.questions)}` : ''}`;
     await out.write(markdown);
     await Sharing.shareAsync(out.uri, { mimeType: 'text/markdown', UTI: 'net.daringfireball.markdown', dialogTitle: '기록 내보내기' });
   },

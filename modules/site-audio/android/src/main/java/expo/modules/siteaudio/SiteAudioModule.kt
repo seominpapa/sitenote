@@ -42,6 +42,7 @@ class SiteAudioModule : Module() {
   private var previousSpeaker = false
   private var speakerOverride = false
   @Volatile private var capture: Capture? = null
+  @Volatile private var micMuted = false
   @Volatile private var suppressUntil = 0L
   @Volatile private var clockedSpeaker = false
   private val outputThread = HandlerThread("SiteAudioPlayback").apply { start() }
@@ -73,6 +74,7 @@ class SiteAudioModule : Module() {
     }
     AsyncFunction("cancelCaptureStart") { id: Double -> synchronized(audioLock) { if (capture?.id == id) stop() } }
     AsyncFunction("stopCapture") { synchronized(audioLock) { stop() } }
+    Function("setMicMuted") { muted: Boolean -> micMuted = muted }
     AsyncFunction("play") { audio: String -> synchronized(audioLock) { enqueue(audio) } }
     AsyncFunction("stopPlayback") { synchronized(audioLock) { stopOutput() } }
     AsyncFunction("playPreview") { wave: ArrayBuffer, promise: Promise -> preview.play(wave, promise) }.runOnQueue(Queues.MAIN)
@@ -82,11 +84,14 @@ class SiteAudioModule : Module() {
     }
     AsyncFunction("pickNoteFolder") { promise: Promise -> pickFolder(promise) }.runOnQueue(Queues.MAIN)
     AsyncFunction("pickNoteDocument") { promise: Promise -> pickDocument(promise) }.runOnQueue(Queues.MAIN)
-    AsyncFunction("writeNoteFile") { folderUri: String, id: String, name: String, localPath: String, archive: Boolean ->
-      mapOf("uri" to NoteDocuments.write(context, Uri.parse(folderUri), id, name, localPath, archive).toString())
+    AsyncFunction("publishNoteFiles") { folderUri: String, id: String, name: String, transcript: String, summary: String?, imported: Boolean ->
+      NoteDocuments.publish(context, Uri.parse(folderUri), id, name, transcript, summary, imported)
     }
-    AsyncFunction("openNoteFile") { folderUri: String, id: String, name: String, archive: Boolean ->
-      NoteDocuments.open(context, Uri.parse(folderUri), id, name, archive)
+    AsyncFunction("openOriginalNote") { uri: String, id: String, name: String ->
+      NoteDocuments.open(context, Uri.parse(uri), id, name)
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("openLegacyNote") { folderUri: String, id: String, name: String ->
+      NoteDocuments.openLegacy(context, Uri.parse(folderUri), id, name)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("deleteNoteFiles") { folderUri: String, id: String ->
       NoteDocuments.deleteGenerated(context, Uri.parse(folderUri), id)
@@ -235,6 +240,7 @@ class SiteAudioModule : Module() {
     val timestamp = AudioTimestamp()
     var framesRead = 0L
     while (capture === state) {
+      val muteBeforeRead = micMuted
       val before = suppresses()
       val count = try { state.record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING) }
       catch (_: IllegalStateException) { AudioRecord.ERROR_INVALID_OPERATION }
@@ -252,12 +258,14 @@ class SiteAudioModule : Module() {
       }
       if (count == 0) continue
       framesRead += count
-      val muted = before || suppresses()
+      val manuallyMuted = muteBeforeRead || micMuted
+      val muted = manuallyMuted || before || suppresses()
       val end = inputEnd(state,timestamp,framesRead)
-      val candidate = muted && end != null && clockedSpeaker
+      val candidate = muted && !manuallyMuted && end != null && clockedSpeaker
       val pcm = converter.convert(buffer,count,muted && !candidate)
       if (pcm.isEmpty()) continue
-      val safe = if (candidate) ByteArray(pcm.size) else pcm
+      val archiveMute = micMuted
+      val safe = if (candidate || archiveMute) ByteArray(pcm.size) else pcm
       try { state.archive?.append(safe) }
       catch (error: Exception) {
         runCatching { state.archive?.finish() }
@@ -266,9 +274,9 @@ class SiteAudioModule : Module() {
       }
       if (capture === state) sendEvent("onAudio", buildMap<String,Any> {
         put("audio",Base64.encodeToString(safe,Base64.NO_WRAP))
-        put("suppressed",muted)
+        put("suppressed",muted || archiveMute)
         if (end != null) put("end",end)
-        if (candidate) put("candidate",Base64.encodeToString(pcm,Base64.NO_WRAP))
+        if (candidate && !archiveMute) put("candidate",Base64.encodeToString(pcm,Base64.NO_WRAP))
       })
     }
   }

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyTurn, createRecord, isOriginalSourceRef, isOriginalTurn, parseCategoryPath, parseTranscript, renameSpeaker, searchContext, searchRecords, speakerGroups, speakerLabel, transcriptMarkdown, turnEvidence, type RecordData, type Turn } from './core.ts';
+import { applyTurn, createRecord, isOriginalSourceRef, isOriginalTurn, parseCategoryPath, parseTranscript, pastMeetingIntent, renameSpeaker, searchContext, searchRecords, speakerGroups, speakerLabel, transcriptMarkdown, turnEvidence, type RecordData, type Turn, type VoiceSearchPlan } from './core.ts';
 import { parseSummary, summaryMarkdown } from './markdown.ts';
-import { currentQuotedRefs, resolveOriginalSources, searchOriginalAnswers, searchPastOriginals } from '../recordContext.ts';
+import { currentQuotedRefs, lookupPastOriginals, resolveOriginalSources, searchOriginalAnswers, searchPastOriginals } from '../recordContext.ts';
 
 const date = '2026-11-20T01:02:03.000Z';
 const make = (id: string, kind: RecordData['kind'] = 'meeting', title = id, project?: string) =>
@@ -269,6 +269,137 @@ test('explicit latest-meeting questions restrict to the last scoped meeting with
   assert.deepEqual(searchPastOriginals(records, {...active, project:undefined}, '마지막 회의에서 뭐였지?').map(hit => hit.recordId), ['other']);
 });
 
+test('plain-language recent meeting and newest note select the latest matching eligible record', () => {
+  const nov = (day: number) => `2026-11-${day}T00:00:00.000Z`;
+  const meeting = applyTurn(createRecord({id:'recent', kind:'meeting', project:'A', now:nov(17)}),
+    turn('meeting', '장비 반입은 수요일입니다.'));
+  const imported = {...applyTurn(createRecord({id:'document', kind:'meeting', project:'A', now:nov(18)}),
+    turn('import-1', '출입구에서 이름을 등록합니다.')), originalFilename:'외부회의.md'};
+  const personal = applyTurn(createRecord({id:'personal', kind:'personal', project:'A', now:nov(19)}),
+    turn('note', '다음 일정을 확인합니다.',{role:'user',section:'personal'}));
+  const current = applyTurn(createRecord({id:'active-note', kind:'meeting', project:'A', now:nov(20)}),
+    turn('current', '녹음 중인 대화입니다.'));
+  const records = [{...meeting,id:'wrong-scope',project:'B',createdAt:nov(19)}, personal, current, meeting, imported];
+  for (const question of ['저번 회의내용', '저번회의내용 알려줘', '최신 회의 요약', '최근 회의에서 무슨 얘기했어?']) {
+    assert.deepEqual(searchPastOriginals(records,current,question).map(item => item.reference), ['[record:recent#meeting]'], question);
+  }
+  for (const question of ['최근에 한 회의 내용이 뭐였지?', '최근 노트에 있는 가장 최근 회의 내용은 뭐였죠?',
+    '최근 노트에 저장된 회의 내용은 뭐였지?', '전에 진행했던 회의 무슨 얘기했어?', '이전 회의 내용을 요약해줘']) {
+    assert.equal(pastMeetingIntent(question),'latest',question);
+    assert.deepEqual(searchPastOriginals(records,current,question).map(item => item.reference), ['[record:recent#meeting]'], question);
+  }
+  for (const question of ['최신 노트', '최근노트내용', '가장 최근 기록 보여줘']) {
+    assert.deepEqual(searchPastOriginals(records,current,question).map(item => item.reference), ['[record:personal#note]'], question);
+  }
+  assert.deepEqual(searchPastOriginals(records,current,'최신 노트 출입구'),[]);
+  assert.deepEqual(searchPastOriginals(records,current,'저번 회의내용 장비 반입').map(item => item.reference), ['[record:recent#meeting]']);
+  assert.deepEqual(searchPastOriginals(records,current,'최신 노트', '관련 없는 이전 질문').map(item => item.reference), ['[record:personal#note]']);
+  assert.deepEqual(searchOriginalAnswers([meeting,imported,personal],'최신 노트').map(item => item.reference), ['[record:personal#note]']);
+});
+
+test('related prior meetings use the current title and earlier human discussion, not the newest unrelated meeting or later speech', () => {
+  const recorded = (id: string, day: number, title: string, text: string, project = '현장 A') =>
+    applyTurn(createRecord({id,kind:'meeting',title,project,now:`2026-11-${day}T00:00:00.000Z`}), turn('said',text));
+  const recent = recorded('recent',19,'외벽 페인트 발주 회의','외벽 페인트 발주를 승인했습니다.');
+  const related = recorded('related',18,'배관 압력 재시험','배관 압력 재시험은 수요일에 합니다.');
+  const old = recorded('old',17,'배관 압력 재시험','배관 압력 재시험은 20일입니다.');
+  const otherProject = recorded('other',19,'배관 압력 재시험','배관 압력 재시험은 금요일입니다.','현장 B');
+  const active = {...recorded('current',20,'현장 점검','배관 압력 재시험이 필요합니다.'),turns:[
+    turn('earlier','배관 압력 재시험이 필요합니다.',{timeMs:200}),
+    ...Array.from({length:24},(_,i) => turn(`recent-${i}`,'확인하겠습니다.',{timeMs:300+i})),
+    turn('ai','외벽 페인트 발주를 논의합니다.',{role:'ai',timeMs:800}),
+    turn('later','외벽 페인트 발주를 논의합니다.',{timeMs:1200}),
+  ]};
+  const records = [active, recent, related, old, otherProject];
+  for (const query of ['지금 회의와 비슷한 최근 회의 내용이 뭐였지?', '이번 주제랑 관련된 이전 회의에서 무슨 얘기했어?',
+    '최근 노트에 저장된 비슷한 회의에서 어떤 내용이 있었지?', '지금 회의 주제를 다룬 최근 회의 내용 알려줘']) {
+    assert.equal(pastMeetingIntent(query),'related',query);
+    assert.deepEqual(searchPastOriginals(records,active,query,'',900).map(hit => hit.reference), ['[record:related#said]'], query);
+  }
+  assert.deepEqual(searchPastOriginals(records,{...active,title:'배관압력재시험회의',turns:[]},'비슷한 회의 내용 알려줘').map(hit => hit.recordId), ['related']);
+  assert.deepEqual(searchPastOriginals([recent,otherProject],active,'비슷한 회의 내용 알려줘','',900), []);
+  assert.deepEqual(searchPastOriginals(records,active,'같은 프로젝트의 최근 회의에서는 무슨 내용이 있었지?','',900).map(hit => hit.recordId), ['recent']);
+  assert.deepEqual(searchPastOriginals(records,active,'비슷한 회의에서 배관 압력 재시험은 언제였지?','',900).map(hit => hit.recordId), ['related']);
+  assert.deepEqual(searchPastOriginals(records,active,'최근에 한 회의 내용이 뭐였지?','',900).map(hit => hit.recordId), ['recent']);
+  assert.equal(pastMeetingIntent('이번 회의에서 지금까지 무슨 얘기를 했지?'),undefined);
+});
+
+test('a broad question about the previous meeting uses summary decisions before the closing chatter', () => {
+  const record = {...applyTurn(
+    applyTurn(make('prior'),turn('decision','방수막 재시험은 목요일 오전입니다.', {timeMs:200})),
+    turn('closing','다들 수고하셨습니다.',{timeMs:900})),
+  summary:'- 방수막 재시험은 목요일 오전입니다. [record:prior#decision]'};
+  assert.equal(searchPastOriginals([record],make('active'),'저번 회의내용')[0]?.reference, '[record:prior#decision]');
+});
+
+test('only a broad saved-meeting recap offers its complete historical human transcript', () => {
+  const prior = {...make('prior'), turns:[turn('opening','출입 게이트는 북쪽입니다.',{timeMs:60_000}),
+    turn('middle','장비 반입 담당자는 김 대리입니다.',{timeMs:1_000_000}),
+    turn('ai','장비 담당에 대한 AI의 추정입니다.',{timeMs:1_000_100,role:'ai',section:'meeting-ai'}),
+    turn('closing','벽체 검사 마감은 금요일입니다.',{timeMs:2_000_000})]};
+  const later = {...prior,id:'later',createdAt:'2026-11-21T00:00:00.000Z'};
+  const active = make('active');
+  const recap = lookupPastOriginals([prior,later],active,'이전 회의에서 어떤 내용이 있었지?');
+  assert.deepEqual(recap.meeting?.turns.map(item => item.id), ['opening','middle','closing']);
+  assert.equal(recap.meeting?.id, 'prior');
+  assert.deepEqual(recap.evidence.map(item => item.turnId), ['opening','middle']);
+  const topical = lookupPastOriginals([prior],active,'이전 회의에서 장비 반입 담당자는 누구였지?');
+  assert.equal(topical.meeting, undefined);
+  assert.deepEqual(topical.evidence.map(item => item.turnId), ['middle']);
+  assert.equal(lookupPastOriginals([prior],active,'이전 회의의 초반에 무슨 얘기를 했지?').meeting, undefined);
+  assert.equal(lookupPastOriginals([prior],active,'최신 노트').meeting, undefined);
+});
+
+test('voice search obeys the planned scope and range even when the spoken words suggest a different source', () => {
+  const prior = {...make('prior'), title:'배관 압력 점검', createdAt:'2026-11-19T03:00:00.000Z', turns:[
+    turn('opening','출입구는 북쪽입니다.',{timeMs:1000}), turn('middle','배관 압력 검사는 목요일입니다.',{timeMs:1_000_000})]};
+  const unrelated = {...make('newer'), title:'도장 발주', createdAt:'2026-11-19T05:00:00.000Z', turns:[turn('other','페인트 구매입니다.')]};
+  const newestNote = {...make('latest', 'personal'), createdAt:'2026-11-20T00:00:00.000Z', turns:[turn('memo','뒷마당 화분을 정리합니다.', {role:'user',section:'personal'})]};
+  const active = {...make('active'), title:'배관 압력 회의', turns:[turn('active','배관 압력 점검을 준비합니다.')]};
+  const records = [prior, unrelated, newestNote, active];
+  const words = '지금까지 초반에 어떤 이야기를 했지?';
+  const lookup = (scope: VoiceSearchPlan['scope'], range: VoiceSearchPlan['range'], terms = '', sameProject = false) =>
+    lookupPastOriginals(records,active,words,'이전 회의에 대한 질문',Infinity,[],{scope,range,terms,sameProject});
+  assert.equal(lookup('latest','overview').meeting?.id,'newer');
+  assert.deepEqual(lookup('latest','overview','',true), {evidence:[]});
+  assert.deepEqual(lookup('current','topic','배관 압력'), {evidence:[]});
+  assert.deepEqual(lookup('clarify','overview'), {evidence:[]});
+  assert.deepEqual(lookup('newest_note','overview').evidence.map(item => item.recordId),['latest']);
+  assert.equal(lookupPastOriginals([prior,unrelated],active,words,undefined,Infinity,[],
+    {scope:'newest_note',range:'overview',terms:'',sameProject:false}).meeting?.id,'newer');
+  assert.equal(lookup('related','overview').meeting?.id,'prior');
+  assert.deepEqual(lookup('related','overview','',true), {evidence:[]});
+  assert.deepEqual(lookup('related','topic','배관 압력').evidence.map(item => item.turnId),['middle']);
+  assert.deepEqual(lookup('related','opening').evidence.map(item => item.turnId),['opening']);
+  assert.deepEqual(lookup('general','topic','배관 압력').evidence.map(item => item.turnId),['middle']);
+  assert.deepEqual(lookupPastOriginals(records,active,'최근에 한 회의 내용은?',undefined,Infinity,[],
+    {scope:'general',range:'topic',terms:'배관 압력',sameProject:false}).evidence.map(item => item.turnId),['middle']);
+  assert.deepEqual(lookup('latest','topic').evidence,[]);
+  for (const scope of ['latest','related','newest_note'] as const) {
+    assert.equal(lookupPastOriginals([{...prior,project:'A'},{...unrelated,project:'B'}],{...active,kind:'personal',project:'A'},
+      words,undefined,Infinity,[],{scope,range:'overview',terms:'',sameProject:true}).meeting?.id,'prior');
+  }
+});
+
+test('search serializes the viewer calendar date separately from the canonical UTC date', () => {
+  const createdAt = '2026-11-20T23:00:00.000Z';
+  const record = {...make('past'), createdAt};
+  const body = JSON.parse(searchContext([turnEvidence(record,turn('said','발언'))]).split('\n')[1]!);
+  const local = new Date(createdAt);
+  const date = [local.getFullYear(),local.getMonth()+1,local.getDate()].map(value => String(value).padStart(2,'0')).join('-');
+  assert.equal(body.date,createdAt);
+  assert.equal(body.displayDate,date);
+});
+
+test('a question about the previous meeting’s opening excludes later turns and the full-meeting summary', () => {
+  const prior = {...make('prior'), turns:[turn('opening','장비 반입은 수요일입니다.',{timeMs:60_000}),
+    turn('closing','장비 반입을 금요일로 바꿨습니다.', {timeMs:2_000_000})], summary:'장비 반입은 금요일입니다.'};
+  const start = make('active');
+  for (const query of ['저번 회의 초반에 무슨 얘기했어?', '저번 회의 초반 장비 반입']) {
+    assert.deepEqual(searchPastOriginals([prior],start,query).map(item => item.reference), ['[record:prior#opening]'], query);
+  }
+});
+
 test('original search matches Korean particles on both sides and drops common spoken question scaffolding', () => {
   const source = applyTurn(make('original'), turn('said', '김민수는 현장소장입니다.'));
   const unrelated = applyTurn(make('other'), turn('different', '김민서와 현장소장실을 확인했습니다.'));
@@ -285,6 +416,48 @@ test('standalone AI search returns original evidence only, including an owned pe
     turn('memo', '김민수는 현장소장입니다.', {role:'user', section:'personal'}));
   assert.deepEqual(searchOriginalAnswers([generated,own], '현장소장이 누구야?').map(hit => hit.reference), ['[record:own#memo]']);
   assert.deepEqual(searchOriginalAnswers([generated], '현장소장'), []);
+});
+
+test('summary-assisted search leads to the supporting original despite a transcription error', () => {
+  const record = applyTurn({...make('older', 'meeting', '안전 점검', 'X'),
+    summary:'## 결정 사항\n\n- 방수막 재시험은 목요일 오전입니다. [record:older#spoken]'},
+    turn('spoken', '방수막 재시엄은 목요일 오전입니다.'));
+  const active = make('active', 'meeting', '지금', 'X');
+  const evidence = searchPastOriginals([record], active, '재시험은 언제?');
+  assert.deepEqual(evidence.map(item => item.reference), ['[record:older#spoken]']);
+  assert.equal(evidence[0]?.text, record.turns[0].text);
+  assert.equal(evidence[0]?.summaryOnly, undefined);
+  assert.deepEqual(searchPastOriginals([record], {...active,project:'Y'}, '재시험은 언제?'),[]);
+  assert.deepEqual(searchOriginalAnswers([{...record, summary:record.summary?.replace(' [record:older#spoken]','')}], '재시험은 언제?')
+    .map(item => item.reference), ['[record:older#spoken]'], 'a matching original should also be found for a summary without an anchor');
+});
+
+test('an unsupported date in the summary is labeled and cannot be quoted as a paragraph', () => {
+  const record = applyTurn({...make('older','meeting','방수','X'),
+    summary:'## 결정 사항\n\n- 방수막 재시험은 21일입니다. [record:older#spoken]\n- 다른 현장 번호 999'},
+    turn('spoken', '방수막 재시험은 20일입니다.'));
+  const active = make('active','meeting','오늘','X');
+  const evidence = searchPastOriginals([record], active, '방수막 재시험 21일');
+  const fallback = evidence.find(item => item.summaryOnly);
+  assert.equal(evidence[0]?.reference, '[record:older#spoken]');
+  assert.ok(fallback);
+  assert.ok(fallback.text.includes('21일'));
+  assert.ok(!fallback.text.includes('999') && !fallback.text.includes('[record:'));
+  assert.equal(isOriginalSourceRef(fallback.reference), false);
+  assert.match(searchContext(evidence), /"summaryOnly":true/);
+  const reply = applyTurn(active, turn('answer','21일입니다.', {role:'ai',sourceRefs:evidence.map(item => item.reference)}));
+  assert.equal(resolveOriginalSources([record], reply, [fallback.reference])[0]?.summaryOnly,true);
+  assert.deepEqual(resolveOriginalSources([{...record,summary:'바뀐 요약'}], reply, [fallback.reference]),[]);
+  assert.throws(() => applyTurn(active, turn('quote','“방수막 재시험은 21일입니다.”', {role:'ai',sourceRefs:[fallback.reference],quotedRefs:[fallback.reference]})),/인용/);
+  assert.deepEqual(searchPastOriginals([{...record,kind:'personal',allowInMeetings:false}], active, '재시험 21일'),[]);
+});
+
+test('summary-assisted search does not ground a different owner in a related passage', () => {
+  const record = applyTurn({...make('owners'), summary:'장비 반입 담당자는 김민수입니다. [record:owners#owner]'},
+    turn('owner', '장비 반입 담당자는 이민수입니다.'));
+  const evidence = searchOriginalAnswers([record],'장비 반입 담당자');
+  assert.equal(evidence[0]?.reference,'[record:owners#owner]');
+  assert.equal(evidence[1]?.summaryOnly,true);
 });
 
 test('stored citations resolve unique allowed human turns in order, with full original and no stale fallback', () => {

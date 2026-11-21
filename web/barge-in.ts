@@ -8,8 +8,9 @@ type Output = { start: number; end: number; samples: Float32Array };
 const stride = 6;
 const points = FRAME_SAMPLES / stride;
 const maxEchoDelay = PCM_RATE / 4;
-const holdFrames = 5;
+const holdFrames = 8; // Eight 20 ms frames; brief clicks and bumps must not stop an answer.
 const quietRms = 0.012;
+const playbackVoiceRms = 0.026;
 const echoCorrelation = 0.78 ** 2;
 const toSample = (seconds: number) => Math.round(seconds * PCM_RATE);
 const muted = ({pcm}: MicFrame): RoutedFrame => ({pcm, suppressed:true});
@@ -134,7 +135,7 @@ export function createBargeInDetector() {
         && matchesEcho(averagedHistory, sketch, stats.variance));
       return [echo ? muted(frame) : {pcm:frame.pcm}];
     }
-    const voice = stats.rms > Math.max(quietRms, 2.5 * ambient) && stats.sustained >= 3
+    const voice = stats.rms > Math.max(playbackVoiceRms, 3 * ambient) && stats.sustained >= 3
       && (!renderHistory(end - FRAME_SAMPLES, end) || !matchesEcho(averagedHistory, sketch, stats.variance));
     if (!voice) {
       const result = [...candidate.map(muted), muted(frame)];

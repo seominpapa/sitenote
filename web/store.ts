@@ -1,9 +1,8 @@
 import type { FileName } from '../src/records/store.ts';
-import { buildNotesExport } from '../src/records/export.ts';
+import { buildNoteExport, buildNotesExport, noteFolderName, readableSummary, readableTranscript } from '../src/records/export.ts';
 import { parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown } from '../src/records/markdown.ts';
 import { assertId, isCategoryPath, safeId, type RecordData } from '../src/records/model.ts';
-import { summaryWithSpeakerNames } from '../src/records/summary-speakers.ts';
-import { noteFiles, type StoredRecord } from './note-files.ts';
+import { noteFiles, type NoteFilesEntry, type StoredRecord } from './note-files.ts';
 
 type StorageIssue = { id: string; file: FileName; cause: unknown };
 type Guard = (action: () => void) => void;
@@ -105,10 +104,22 @@ function withRecord<T>(id: string, mode: IDBTransactionMode, action: (record: St
   });
 }
 
+function noteFilesEntry(record: RecordData, importMarkdown?: string): NoteFilesEntry {
+  const summary = record.originalFilename ? undefined : readableSummary(record);
+  return {id:record.id, folderName:noteFolderName(record), 'transcript.md':readableTranscript(record, importMarkdown),
+    ...(record.originalFilename && {imported:true}), ...(summary && {'summary.md':summary})};
+}
+
+function projectNoteFile(entry: StoredRecord | undefined) {
+  if (!entry || !safeId.test(entry.id)) return;
+  const record = parseStored(entry, () => {});
+  if (record) return noteFilesEntry(record, typeof entry.importMarkdown === 'string' ? entry.importMarkdown : undefined);
+}
+
 function snapshotEntries() {
-  return useStore<StoredRecord[]>('readonly', (store, result) => {
+  return useStore<NoteFilesEntry[]>('readonly', (store, result) => {
     const request = store.getAll();
-    request.onsuccess = () => result(request.result.filter((entry: StoredRecord) => safeId.test(entry.id) && parseStored(entry, () => {})));
+    request.onsuccess = () => result(request.result.map(projectNoteFile).filter((entry: NoteFilesEntry | undefined): entry is NoteFilesEntry => !!entry));
   });
 }
 
@@ -126,8 +137,8 @@ function writeNoteFiles(ids: readonly string[], deletions: readonly string[] = [
   if (!desktop || (!ids.length && !deletions.length)) return;
   return queueNoteFiles(async () => {
     for (const id of deletions) localStorage.setItem(deletedFilesPrefix + id, '1');
-    const latest = await Promise.all(ids.map(id => withRecord(id, 'readonly', entry => entry)));
-    await desktop.sync(latest.filter((entry): entry is StoredRecord => !!entry), deletions);
+    const latest = await Promise.all(ids.map(id => withRecord(id, 'readonly', projectNoteFile)));
+    await desktop.sync(latest.filter((entry): entry is NoteFilesEntry => !!entry), deletions);
     for (const id of deletions) localStorage.removeItem(deletedFilesPrefix + id);
   }).catch(() => {
     window.dispatchEvent(new CustomEvent(noteFileError, {detail:deletions.length ? 'delete' : 'save'}));
@@ -160,13 +171,13 @@ export async function chooseNoteFolder() {
   });
 }
 
-export async function saveImportedRecord(record: RecordData) {
+export async function saveImportedRecord(record: RecordData, importMarkdown: string) {
   const desktop = noteFiles();
   if (!desktop) throw Error('데스크톱 앱에서 문서를 가져올 수 있습니다.');
-  const entry = {id:record.id, 'transcript.md':transcriptMarkdown(record)};
+  const entry = {id:record.id, 'transcript.md':transcriptMarkdown(record), importMarkdown};
   await useStore<void>('readwrite', store => { store.add(entry); });
   try {
-    await queueNoteFiles(() => desktop.saveImport(entry));
+    await queueNoteFiles(() => desktop.saveImport(noteFilesEntry(record, importMarkdown)));
   } catch (error) {
     await useStore<void>('readwrite', store => { store.delete(record.id); });
     throw error;
@@ -329,11 +340,12 @@ export function undoCategories(expected: readonly CategoryUndoEntry[]) {
   }, expected);
 }
 
-export function exportRecord(record: RecordData) {
-  const markdown = record.summary
-    ? `${transcriptMarkdown(record)}\n---\n\n${summaryMarkdown(summaryWithSpeakerNames(record) ?? record.summary, record.questions)}`
-    : transcriptMarkdown(record);
-  download(new Blob([markdown], {type:'text/markdown;charset=utf-8'}), `sitenote-${record.id}.md`);
+export async function exportRecord(record: RecordData) {
+  const original = record.originalFilename
+    ? await withRecord(record.id, 'readonly', entry => entry?.importMarkdown).catch(() => undefined)
+    : undefined;
+  const {filename, markdown} = buildNoteExport(record, original);
+  download(new Blob([markdown], {type:'text/markdown;charset=utf-8'}), filename);
 }
 
 export function exportRecords(records: readonly RecordData[]) {

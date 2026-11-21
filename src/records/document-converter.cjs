@@ -7,7 +7,7 @@ const maxDocumentBytes = 20 * 1024 * 1024;
 const maxExpandedBytes = 64 * 1024 * 1024;
 const maxDocumentTextLength = 250_000;
 const maxZipEntries = 2048;
-const documentExtensions = ['txt', 'md', 'markdown', 'docx', 'hwpx', 'hwp', 'doc'];
+const documentExtensions = ['txt', 'md', 'markdown', 'docx', 'hwpx', 'hwp', 'pdf', 'doc'];
 
 class DocumentImportError extends Error {
   constructor(message) {
@@ -393,6 +393,51 @@ function convertHwp(bytes) {
   return nonEmpty(text);
 }
 
+async function convertPdf(bytes) {
+  if (!sameBytes(bytes.subarray(0, 5), [37, 80, 68, 70, 45])) throw documentError('invalid PDF header');
+  const {getDocument} = await import('unpdf/pdfjs');
+  // shortcut: use embedded font mappings only, package CMaps if legacy PDFs need them.
+  const task = getDocument({data:bytes.slice(), verbosity:0, maxImageSize:0, useSystemFonts:false, disableFontFace:true,
+    isOffscreenCanvasSupported:false, isImageDecoderSupported:false, useWasm:false, useWorkerFetch:false});
+  try {
+    const document = await task.promise;
+    if (document.numPages > 500) throw documentError('PDF is too large: more than 500 pages');
+    const pages = [];
+    let length = 0;
+    for (let number = 1; number <= document.numPages; number++) {
+      const page = await document.getPage(number);
+      let text = '';
+      const reader = page.streamTextContent().getReader();
+      try {
+        for (;;) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          for (const item of value.items) {
+            if (!('str' in item)) continue;
+            text += item.str + (item.hasEOL ? '\n' : '');
+            if (length + text.length > maxDocumentTextLength) throw documentError('converted text is too large');
+          }
+        }
+      } finally {
+        await reader.cancel();
+        page.cleanup();
+      }
+      if (text.trim()) {
+        pages.push(text.trim());
+        length += text.length + 2;
+      }
+    }
+    if (!pages.length) throw documentError('image-only PDF; OCR is required');
+    return nonEmpty(pages.join('\n\n'));
+  } catch (error) {
+    if (error instanceof DocumentImportError) throw error;
+    if (error?.name === 'PasswordException') throw documentError('protected PDF');
+    throw documentError('invalid PDF or text could not be read safely');
+  } finally {
+    await task.destroy();
+  }
+}
+
 async function convertDocument(filename, source) {
   try {
     if (typeof filename !== 'string' || !filename.trim()) throw documentError('filename is required');
@@ -403,6 +448,7 @@ async function convertDocument(filename, source) {
     if (extension === 'docx') return convertDocx(bytes);
     if (extension === 'hwpx') return convertHwpx(bytes);
     if (extension === 'hwp') return convertHwp(bytes);
+    if (extension === 'pdf') return await convertPdf(bytes);
     if (extension === 'doc') throw documentError('legacy DOC is unsupported; save it as DOCX first');
     throw documentError(`unsupported document type: ${extension || 'none'}`);
   } catch (error) {
