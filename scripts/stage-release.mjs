@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { verifyNotarizedMacDmg } from '../desktop/mac-signing.mjs';
 
 const releaseFiles = [
   'Sitenote-Desktop.zip',
@@ -11,7 +13,7 @@ const releaseFiles = [
   'THIRD-PARTY-NOTICES.txt',
 ];
 
-async function stageRelease(source) {
+export async function stageRelease(source, verifyMac = verifyNotarizedMacDmg) {
   for (const name of releaseFiles) {
     const file = await lstat(join(source, name)).catch(error => {
       if (error.code !== 'ENOENT') throw error;
@@ -25,6 +27,7 @@ async function stageRelease(source) {
     for (const name of releaseFiles) {
       const path = join(output, name);
       await copyFile(join(source, name), path);
+      if (name.endsWith('.dmg')) await verifyMac(path);
       const hash = createHash('sha256');
       for await (const chunk of createReadStream(path)) hash.update(chunk);
       sums.push(`${hash.digest('hex')}  ${name}\n`);
@@ -37,10 +40,13 @@ async function stageRelease(source) {
   }
 }
 
-try {
-  if (process.argv.length > 3) throw Error('사용법: node scripts/stage-release.mjs [배포 파일 폴더]');
-  console.log(await stageRelease(resolve(process.argv[2] ?? 'dist')));
-} catch (error) {
-  console.error(`Sitenote: ${error.message}`);
-  process.exitCode = 1;
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    if (process.argv.length > 3) throw Error('사용법: node scripts/stage-release.mjs [배포 파일 폴더]');
+    if (process.platform !== 'darwin') throw Error('DMG의 서명과 공증을 검증할 수 있는 Mac에서 실행하세요.');
+    console.log(await stageRelease(resolve(process.argv[2] ?? 'dist')));
+  } catch (error) {
+    console.error(`Sitenote: ${error.message}`);
+    process.exitCode = 1;
+  }
 }

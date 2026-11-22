@@ -186,6 +186,11 @@ label > input:not([type=checkbox]), label > select { width: 100% }
 .voice-layout { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: .5rem }
 .voice-controls { display: grid; gap: .5rem; min-height: 0; max-height: 63%; overflow-y: auto }
 .voice-layout .recording { padding: .75rem 1rem }
+.voice-layout .recording .record-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+@media (max-height: 520px) {
+  .voice-layout .recording .actions { gap: .35rem; margin-block-start: .5rem }
+  .voice-layout .recording .actions .button { padding-inline: .7rem }
+}
 .voice-layout .audio-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem }
 .voice-layout .audio-panel { padding: .5rem }
 .voice-layout .waveform { height: 1.5rem }

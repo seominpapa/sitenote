@@ -412,8 +412,8 @@ test('answers only finalized meeting questions, then advances followup after a c
   }
 });
 
-for (const {width,height,mode} of [{width:1280,height:720,mode:'회의'}, {width:375,height:667,mode:'회의'},
-  {width:375,height:667,mode:'개인 대화'}]) {
+for (const {width,height,mode,longTitle} of [{width:1280,height:720,mode:'회의'}, {width:375,height:667,mode:'회의'},
+  {width:375,height:667,mode:'개인 대화'}, {width:500,height:460,mode:'회의',longTitle:true}]) {
   test(`${mode} keeps independent transcription controls and latest text in view at ${width}`, async ({page}) => {
     let emit;
     const server = createApp({
@@ -426,17 +426,21 @@ for (const {width,height,mode} of [{width:1280,height:720,mode:'회의'}, {width
     try {
       await page.setViewportSize({width,height});
       await page.goto('http://127.0.0.1:' + server.address().port);
-      await page.getByLabel(`${mode} 제목`, {exact:true}).fill('스크롤 테스트');
+      const title = longTitle ? '회의 제목과 안건을 길게 입력하는 경우 '.repeat(5).trim() : '스크롤 테스트';
+      await page.getByLabel(`${mode} 제목`, {exact:true}).fill(title);
       await page.getByRole('button', {name:`${mode} 시작`}).click();
       await expect(page.getByTestId('voice-status')).toContainText(`${mode} 전사 중`);
       const controls = page.getByRole('button', {name:'녹음 종료'});
       const prefix = mode === '회의' ? '회의' : '전사';
-      await page.getByRole('button', {name:`${prefix}중지`, exact:true}).click();
+      const pause = page.getByRole('button', {name:`${prefix}중지`, exact:true});
+      await expect(pause).toBeInViewport({ratio:1});
+      await pause.click();
       await expect(page.getByTestId('voice-status')).toContainText(`${mode} 전사 일시정지`);
       const muteMic = page.getByRole('button', {name:'마이크 중지', exact:true});
       await muteMic.click();
       const resumeTranscription = page.getByRole('button', {name:`${prefix}재개`, exact:true});
       await expect(resumeTranscription).toBeEnabled();
+      await expect(resumeTranscription).toBeInViewport({ratio:1});
       await page.getByRole('button', {name:'마이크 재개', exact:true}).click();
       await expect(page.getByTestId('voice-status')).toContainText(`${mode} 전사 일시정지`);
       await resumeTranscription.click();

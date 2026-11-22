@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { stageRelease as stageReleaseFiles } from './stage-release.mjs';
 
 const execFile = promisify(exec);
 const stageRelease = fileURLToPath(new URL('./stage-release.mjs', import.meta.url));
@@ -25,8 +26,9 @@ async function fixture(t, names) {
 test('stages only desktop release assets and hashes; preserves any previously built APK', async t => {
   const apk = 'Sitenote-Android-arm64.apk';
   const dir = await fixture(t, [...desktopFiles, apk, 'SHA256SUMS.txt']);
-  const { stdout } = await execFile(process.execPath, [stageRelease, dir]);
-  const output = stdout.trim();
+  const verified = [];
+  const output = await stageReleaseFiles(dir, async path => { verified.push(path); });
+  assert.deepEqual(verified, desktopFiles.filter(name => name.endsWith('.dmg')).map(name => join(output, name)));
   assert.deepEqual((await readdir(output)).sort(), [...desktopFiles, 'SHA256SUMS.txt'].sort());
   const expected = [];
   for (const name of desktopFiles) {
@@ -39,10 +41,16 @@ test('stages only desktop release assets and hashes; preserves any previously bu
   assert.equal(await readFile(join(dir, 'SHA256SUMS.txt'), 'utf8'), 'Fixture: SHA256SUMS.txt\n');
 });
 
+test('refuses to stage an unsigned Mac disk image', { skip: process.platform !== 'darwin' }, async t => {
+  const dir = await fixture(t, desktopFiles);
+  await assert.rejects(execFile(process.execPath, [stageRelease, dir]), /Sitenote-macOS-arm64\.dmg/);
+  assert.deepEqual((await readdir(dir)).sort(), [...desktopFiles].sort());
+});
+
 test('fails without creating an upload folder when a required desktop artifact is missing', async t => {
   const missing = 'Sitenote-Windows-x64.exe';
   const names = desktopFiles.filter(name => name !== missing);
   const dir = await fixture(t, names);
-  await assert.rejects(execFile(process.execPath, [stageRelease, dir]), /Sitenote-Windows-x64\.exe/);
+  await assert.rejects(stageReleaseFiles(dir), /Sitenote-Windows-x64\.exe/);
   assert.deepEqual((await readdir(dir)).sort(), names.sort());
 });

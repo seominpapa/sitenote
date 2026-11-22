@@ -422,13 +422,10 @@ export function Voice({ session, status, mode, record, evidence, finish, busy, a
   return <section className="page-stack voice-layout">
     <div className="voice-controls">
       <div className="page-heading recording">
-        <h1 className="record-title">{mode === 'followup' ? '보충 질문' : record.title}</h1>
+        <h1 className="record-title" title={mode === 'followup' ? undefined : record.title}>{mode === 'followup' ? '보충 질문' : record.title}</h1>
         <p className="muted">{mode === 'meeting' ? '회의 녹음' : mode === 'personal' ? '개인 대화 녹음' : '실시간 음성 노트'}</p>
         <p className="recording-status" data-testid="voice-status" role="status"><span className={status.capturing ? 'dot active' : 'dot'} />{voiceStatus(status, mode, aiInvited)}</p>
         {aiInvited && status.transcriptionPaused && <p className="muted" role="status">{mode === 'meeting' ? '회의 전사 일시정지' : '개인 대화 전사 일시정지'}</p>}
-        {canInvite && recording && !status.paused && !status.micMuted && <p className="muted">{aiAvailable
-          ? 'AI가 필요하면 “AI에게 질문”을 누르세요.'
-          : 'AI 음성 질문에는 OpenAI API 키가 필요합니다.'}</p>}
         {mode === 'followup' && !status.paused && <>
           {status.followupState === 'complete' ? <p className="muted" role="status">확인할 질문을 마쳤습니다. 녹음 종료를 눌러 저장하세요.</p>
             : status.followupState === 'judging' ? <p className="muted" role="status">방금 답변으로 확인할 내용이 충분한지 보고 있습니다.</p>
@@ -450,6 +447,9 @@ export function Voice({ session, status, mode, record, evidence, finish, busy, a
           <button className="button quiet" disabled={!status.playback || stopping} onClick={session.interrupt}>AI 음성 중지</button>
           <button className="button danger" disabled={busy || status.phase === 'finishing'} onClick={finish}>녹음 종료</button>
         </div>
+        {canInvite && recording && !status.paused && !status.micMuted && <p className="muted">{aiAvailable
+          ? 'AI가 필요하면 “AI에게 질문”을 누르세요.'
+          : 'AI 음성 질문에는 OpenAI API 키가 필요합니다.'}</p>}
       </div>
       <div className="audio-panels">
         <AudioPanel kind="mic" title="마이크 입력" label={micStatus} drawing={status.capturing && !status.paused && !status.micMuted && !stopping} readMeter={readMeter} />

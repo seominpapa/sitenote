@@ -19,20 +19,13 @@
 
 ## 데스크톱 앱 첫 실행
 
-Mac용 DMG는 Apple 공증을 받지 않았고, Windows용 EXE에는 게시자 서명이 없습니다. 아래 절차는 이 저장소의 [릴리스](https://github.com/seominpapa/sitenote/releases)에서 받은 파일이 같은 릴리스의 SHA-256 체크섬과 일치하고, 기기 관리 정책에서 실행을 허용할 때만 사용하세요.
-
 ### Mac — DMG
 
-1. DMG를 열고 `Sitenote.app`을 **응용 프로그램**으로 드래그하세요. 복사가 끝나면 DMG를 추출하고 **응용 프로그램 → Sitenote**를 엽니다.
-2. macOS가 개발자를 확인할 수 없다며 앱을 막으면 경고를 닫고 **시스템 설정 → 개인정보 보호 및 보안 → 보안 → 그래도 열기**를 선택합니다. 다시 확인 창이 뜨면 앱 이름을 확인하고 열기를 승인합니다.
-3. **그래도 열기**가 표시되지 않거나 macOS가 파일 손상·악성코드를 경고하면 실행을 중단하세요. 회사나 학교 기기에서 정책으로 막힌 경우에는 담당자에게 문의하세요.
+v0.1.5부터 Mac 앱과 DMG는 Developer ID로 서명하며 Apple 공증을 거쳐 배포합니다. Mac에 맞는 DMG를 열어 `Sitenote.app`을 **응용 프로그램**으로 드래그하세요. 복사가 끝나면 디스크 이미지를 추출하고 **응용 프로그램 → Sitenote**를 엽니다.
 
 ### Windows — 포터블 EXE
 
-1. `Sitenote-Windows-x64.exe`를 더블클릭합니다. 설치 마법사 없이 앱이 시작됩니다.
-2. SmartScreen에 **Windows의 PC 보호**가 표시되면 **추가 정보 → 실행**을 선택합니다. **실행** 버튼이 없거나 Windows 보안이 위협을 감지했다면 진행하지 마세요. 회사나 학교 기기에서는 담당자에게 문의하세요.
-
-운영체제의 보호 기능을 끌 필요는 없습니다. 데스크톱 앱을 열기 어렵다면 아래 웹앱 ZIP을 사용할 수 있습니다.
+`Sitenote-Windows-x64.exe`를 더블클릭하면 설치 마법사 없이 앱이 시작됩니다. Windows EXE에는 게시자 서명이 없습니다. Windows 보안 정책으로 앱을 열 수 없다면 아래 웹앱 ZIP을 사용할 수 있습니다.
 
 앱이 열리면 **설정**에서 API 키를 등록하고, 녹음할 때 마이크 사용을 허용하세요. 원문과 요약은 로컬 PC에 저장됩니다. 데스크톱 앱과 웹앱은 기록을 따로 보관하므로 기존 웹앱 노트는 원래 브라우저와 주소에서 열어야 합니다.
 
@@ -156,11 +149,13 @@ npm ci --prefix server --omit=dev
 npm exec -- vite build web --outDir ../dist/publish-web --emptyOutDir --assetsInlineLimit 0
 node scripts/package-web.mjs --web-root=dist/publish-web
 npm ci --prefix desktop
-npm --prefix desktop run dist:mac    # macOS에서 DMG
+npm --prefix desktop run dist:mac    # macOS에서 DMG 서명 및 Apple 공증
 npm --prefix desktop run dist:win    # Windows x64 휴대용 EXE
 ```
 
-웹 ZIP, Mac DMG 두 개, Windows EXE는 각각 빌드한 컴퓨터의 `dist/`에 생성됩니다. 배포할 컴퓨터의 `dist/`에 이 파일들을 모으고, 사용한 라이브러리와 라이선스를 반영한 `THIRD-PARTY-NOTICES.txt`도 같은 폴더에 둡니다.
+Mac 배포용 빌드에는 로그인 키체인에 설치한 **Developer ID Application** 인증서와 개인 키가 필요합니다. 최초 한 번 `xcrun notarytool store-credentials Sitenote`로 Apple 공증 로그인을 키체인에 등록하세요. 이미 다른 이름으로 등록했다면 `APPLE_KEYCHAIN_PROFILE=프로필이름 npm --prefix desktop run dist:mac`을 실행하세요. Mac 빌드는 두 DMG의 Apple 공증을 확인하고 공증 티켓을 첨부한 뒤에만 배포 폴더에 파일을 내보냅니다.
+
+웹 ZIP, Mac DMG 두 개, Windows EXE는 각각 빌드한 컴퓨터의 `dist/`에 생성됩니다. Mac의 `dist/`에 같은 버전의 파일과 `THIRD-PARTY-NOTICES.txt`를 모은 뒤 아래 명령을 실행하세요. 두 DMG의 서명과 공증을 다시 확인합니다.
 
 ```sh
 node scripts/stage-release.mjs
