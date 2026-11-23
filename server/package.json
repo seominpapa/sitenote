@@ -1,5 +1,6 @@
 {
   "name": "sitenote-server",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "engines": {

@@ -179,3 +179,7 @@ EXPO_NO_TELEMETRY=1 npm run prebuild -- --no-install
 서버와 통합 테스트는 루프백 포트를 사용하며 제공자 응답을 모의 처리합니다. Android ARM64 디버그 APK는 빌드했고 Android 15 에뮬레이터에서 마이크 권한 승인, 입력 프레임에 대한 모의 전사, Markdown·WAV 저장 및 재실행 후 기록 복구를 확인했습니다. iOS는 네이티브 프로젝트 생성과 JavaScript 번들까지만 검증했습니다. 실제 제공자 연결, 실기기 음성 입출력·반향은 별도로 확인해야 합니다. 네이티브 오디오 검사 절차는 [오디오 모듈 문서](modules/site-audio/README.md)에 있습니다.
 
 공식 프로토콜: [OpenAI GPT-Live WebSocket](https://developers.openai.com/api/docs/guides/voice-websockets), [Soniox 실시간 WebSocket](https://docs.soniox.com/api-reference/stt/websocket-api), [Expo 개발 빌드](https://docs.expo.dev/develop/development-builds/introduction/).
+
+## 라이선스
+
+Sitenote의 자체 코드는 [MIT 라이선스](LICENSE)로 배포합니다. 함께 배포되는 외부 라이브러리와 글꼴에는 각각의 라이선스가 적용됩니다.

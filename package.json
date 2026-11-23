@@ -1,6 +1,7 @@
 {
   "name": "sitenote",
   "version": "0.1.5",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "main": "index.ts",

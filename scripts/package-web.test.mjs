@@ -57,6 +57,9 @@ test('offline desktop staging is reproducible, matches the server digest, and in
   const {archive} = await packageDesktop({root, output, webRoot});
   const original = await readFile(archive);
   const files = zipFiles(original);
+  const license = await readFile(join(root, 'LICENSE'));
+  assert.deepEqual(await readFile(join(stage.runtime, 'LICENSE')), license);
+  assert.deepEqual(files.get('LICENSE')?.bytes, license);
   for (const path of ['Sitenote.command', 'Sitenote.cmd', 'README.md', 'scripts/launch-web.mjs', 'server/index.mjs',
     'server/node_modules/.package-lock.json', 'server/node_modules/ws/LICENSE', 'web/fonts/Open-Sans-OFL.txt', 'dist/web/assets/index-test.js']) {
     assert(files.has(path), path + ' missing');

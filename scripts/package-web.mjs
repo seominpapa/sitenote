@@ -52,6 +52,7 @@ async function runtimeFiles(root, webRoot) {
   return [...await Promise.all([
     ...modules, ...wsFiles.map(name => file(wsDir, name, `server/node_modules/ws/${name}`)),
     file(server, 'node_modules/.package-lock.json', 'server/node_modules/.package-lock.json'),
+    file(root, 'LICENSE'),
     file(root, `web/fonts/${fontLicense}`, `licenses/${fontLicense}`),
     ...embeddedWebPackages.map(name => file(root, `node_modules/${name}/LICENSE`, `licenses/${name}-LICENSE.txt`)),
   ]), index, ...assets];
