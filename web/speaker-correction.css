@@ -16,3 +16,10 @@
 .speaker-correction-row label.checkbox { align-items: flex-start }
 .speaker-correction-row label > span { min-width: 0; overflow-wrap: anywhere }
 .speaker-correction-row small { display: block; margin-block-end: .2rem }
+.speaker-model-setup { min-width: 0; border: 1px solid var(--divider); border-radius: var(--radius); padding: .6rem .75rem }
+.speaker-model-setup p, .speaker-model-setup ol { margin-block: .5rem; font-size: .875rem }
+.speaker-model-setup ol { padding-inline-start: 1.4rem }
+.speaker-model-setup li + li { margin-block-start: .5rem }
+.speaker-model-setup li > div { margin-block-start: .4rem }
+.speaker-model-setup code { overflow-wrap: anywhere; user-select: text }
+.speaker-model-setup li > code:only-of-type, .speaker-model-setup div > code { display: block; padding: .25rem .4rem; background: var(--canvas) }

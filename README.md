@@ -71,13 +71,13 @@ v0.1.1부터 앱이 시작할 때 GitHub의 공개 릴리스를 확인합니다.
 
 회의 후에는 음성 보충 질문을 이어가거나 **글로 보충하기**에서 AI 질문에 타이핑으로 답할 수 있습니다. **직접 질문과 답변 기록**은 마이크나 AI 연결 없이 사용할 수 있고, 내용은 같은 회의의 보충 기록에 저장됩니다. 회의 상세의 **화자 이름 관리**에서 각 화자의 첫 발언을 보고 이름을 입력하면 해당 화자의 모든 발언 표시와 Markdown 내보내기에 반영됩니다. 회의 본문과 보충 질문은 화자 번호를 별도로 부여하므로 같은 사람이라면 양쪽 그룹에 같은 이름을 입력하세요.
 
-회의 시작 전에 **원본 음성 보관 (발언별로 다시 듣기)**을 선택하면 이 앱 또는 브라우저의 로컬 저장소에 음성을 남깁니다. 원문에서 발언 옆 **▶ 듣기**를 누르면 해당 발언 시점부터 재생합니다. 음소거·전사 중지·AI 질의응답 구간은 보관하지 않습니다. 회의 노트를 삭제하면 음성도 지워집니다. 이 음성은 지정한 Markdown 폴더나 Markdown 내보내기에 포함되지 않으며, 기존에 음성을 보관하지 않은 노트는 다시 들을 수 없습니다.
+회의 시작 전에 **원본 음성 보관**을 선택하면 이 앱 또는 브라우저의 로컬 저장소에 음성을 남깁니다. 체크박스 옆 **?**에서 사용 방법을 확인할 수 있습니다. 화자가 잘못 구분되면 원문에서 발언 옆 **▶ 듣기**를 눌러 해당 발언을 듣고, **화자 정정**에서 올바른 화자로 옮깁니다. 음소거·전사 중지·AI 질의응답 구간은 보관하지 않습니다. 회의 노트를 삭제하면 음성도 지워집니다. 이 음성은 지정한 Markdown 폴더나 Markdown 내보내기에 포함되지 않으며, 기존에 음성을 보관하지 않은 노트는 다시 들을 수 없습니다.
 
 회의 상세 맨 아래 **화자 정정 (선택 사항)**에서 잘못 배정된 발언을 골라 기존 화자 또는 새 화자로 옮길 수 있습니다. 발언 시각·내용·출처 링크는 유지됩니다. 이미 만든 요약의 화자 설명은 요약을 다시 만들어 갱신할 수 있습니다. 아래 모델을 설치하면 음성을 보관한 회의에서 화자가 확실한 발언 하나를 선택하고 **기준 발언과 비슷한 발언 찾기**를 누를 수 있습니다. 후보로 표시된 발언을 확인한 뒤 옮기세요. 목소리 비교와 수동 정정은 추가 Soniox API 호출 없이 동작합니다.
 
 ### 선택 사항: 비슷한 발언 찾기용 로컬 모델
 
-모델 설치 없이도 실시간 전사, 구간 재생, 수동 화자 정정을 쓸 수 있습니다. 자동 후보를 쓰려면 이 PC에 Node.js/npm으로 실행 모듈을 한 번 설치하고, 공식 [3D-Speaker CAM++ 모델](https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx) 파일(약 28.3 MB)을 내려받아 이름을 `model.onnx`로 바꿔 주세요.
+모델 설치 없이도 실시간 전사, 구간 재생, 수동 화자 정정을 쓸 수 있습니다. 모델로 비슷한 발언을 찾고 싶다면 음성을 보관한 노트의 **화자 정정 → CAM++ 설치 안내**를 펼치세요. 모델과 실행 모듈은 자동으로 내려받지 않습니다. 이 PC에 Node.js/npm으로 실행 모듈을 한 번 설치하고, 공식 [3D-Speaker CAM++ 모델](https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx) 파일(약 28.3 MB)을 내려받아 이름을 `model.onnx`로 바꿔 주세요.
 
 - **Mac 터미널:** `mkdir -p ~/.sitenote/speaker` 실행 후 `npm install --prefix ~/.sitenote/speaker sherpa-onnx-node@2.0.3`
 - **Windows PowerShell:** `New-Item -ItemType Directory -Force "$HOME/.sitenote/speaker"` 실행 후 `npm install --prefix "$HOME/.sitenote/speaker" sherpa-onnx-node@2.0.3`

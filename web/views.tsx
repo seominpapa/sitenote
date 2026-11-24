@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { searchRecords, speakerGroups, speakerLabel, summarySourceAnchor, summarySourceEvidence, timeLabel, type Evidence, type RecordData, type Turn } from '../src/records/core.ts';
 import { summaryWithSpeakerNames } from '../src/records/summary-speakers.ts';
 import { date, Icon, type Jump } from './ui.tsx';
@@ -24,6 +24,25 @@ const describe = (record: RecordData) => [date.format(new Date(record.createdAt)
 
 type StartRecording = (title: string, project?: string, keepAudio?: boolean) => void;
 
+function MeetingAudioOption({checked, disabled, onChange}: {
+  checked: boolean; disabled: boolean; onChange: (checked: boolean) => void;
+}) {
+  const helpId = useId();
+  const [showHelp, setShowHelp] = useState(false);
+  return <div className="meeting-audio-option">
+    <label className="checkbox"><input type="checkbox" checked={checked} disabled={disabled}
+      onChange={event => onChange(event.currentTarget.checked)} /> 원본 음성 보관</label>
+    <button type="button" className="audio-option-help" aria-label="원본 음성 보관 안내"
+      aria-controls={helpId} aria-expanded={showHelp} onClick={() => setShowHelp(open => !open)}
+      onKeyDown={event => { if (event.key === 'Escape') setShowHelp(false); }}>
+      <span aria-hidden="true">?</span>
+    </button>
+    <p id={helpId} className="audio-option-bubble" hidden={!showHelp}>
+      회의 음성을 이 기기에 보관합니다. 화자가 잘못 구분되면 회의 후 발언별로 다시 듣고 올바른 화자로 옮길 수 있습니다.
+    </p>
+  </div>;
+}
+
 function RecordingForm({ titlePrefix, placeholder, start, disabled }: {
   titlePrefix: '개인 대화' | '회의'; placeholder: string; start: StartRecording; disabled: boolean;
 }) {
@@ -36,8 +55,7 @@ function RecordingForm({ titlePrefix, placeholder, start, disabled }: {
   }}>
     <label>{titlePrefix} 제목<input value={title} onChange={event => setTitle(event.target.value)} maxLength={120} placeholder={placeholder} required /></label>
     <label>{titlePrefix} 프로젝트<input value={project} onChange={event => setProject(event.target.value)} maxLength={120} placeholder="선택 입력" /></label>
-    {titlePrefix === '회의' && <label className="checkbox"><input type="checkbox" checked={keepAudio} disabled={disabled}
-      onChange={event => setKeepAudio(event.target.checked)} /> 원본 음성 보관 (발언별로 다시 듣기)</label>}
+    {titlePrefix === '회의' && <MeetingAudioOption checked={keepAudio} disabled={disabled} onChange={setKeepAudio} />}
     <button className="button primary" disabled={disabled || !title.trim()}>{titlePrefix} 시작 <Icon name="arrow" /></button>
   </form>;
 }
@@ -741,8 +759,7 @@ export function Detail({ record, related, part, busy, open, back, summarize, cor
     {!!supplemental.length && <><h2>회의 후 보충 질문 · {supplemental.length}개 발언</h2><Transcript turns={supplemental} record={record} originalAt={part} afterTurn={answerSources} /></>}
     <SpeakerCorrection key={record.id} record={record} busy={busy} save={reassign} playAt={audio.playAt}
       findSimilar={audio.available && speakerMatch ? turn => findSimilarMeetingTurns(record,turn) : undefined}
-      similarityUnavailable={audio.available ? (!speakerMatch ? '비슷한 발언을 비교하려면 이 PC에 화자 비교 모델을 설치하세요.' : undefined)
-        : '비슷한 발언을 비교하려면 회의 시작 전에 원본 음성 보관을 선택하세요.'} />
+      audioAvailable={audio.available} />
     {audio.player}
   </section>;
 }

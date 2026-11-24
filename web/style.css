@@ -108,7 +108,15 @@ svg { width: 1.125rem; height: 1.125rem; flex: none }
 .recording-form label { display: grid; gap: .38rem; color: var(--nav-ink); font-size: .8125rem; line-height: 1.4 }
 .recording-form .button { grid-column: 1 / -1; justify-self: start; min-height: 3rem; margin-block-start: .25rem; padding-inline: 1.18rem; font-size: .9375rem }
 input:not([type=checkbox]), select { min-width: 0; max-width: 100%; min-height: 2.5rem; padding: .52rem .65rem; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--canvas); color: var(--ink); font-size: .9rem; line-height: 1.35 }
-.recording-form input { min-height: 3rem }
+.recording-form input:not([type=checkbox]) { min-height: 3rem }
+.meeting-audio-option { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .15rem .35rem }
+.meeting-audio-option label.checkbox { justify-self: end; display: inline-flex; align-items: center; gap: .4rem; min-height: 1.75rem; cursor: pointer }
+.meeting-audio-option input { inline-size: 1rem; block-size: 1rem; margin: 0 }
+.audio-option-help { display: grid; place-items: center; inline-size: 1.75rem; block-size: 1.75rem; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--link) }
+.audio-option-help span { display: grid; place-items: center; inline-size: 1.05rem; block-size: 1.05rem; border: 1px solid currentColor; border-radius: 50%; font-size: .72rem; font-weight: 600 }
+.audio-option-help:hover { background: var(--blue-tint) }
+.meeting .audio-option-bubble { position: relative; grid-column: 1 / -1; justify-self: end; max-inline-size: 21rem; margin: .3rem 0 .15rem; padding: .55rem .7rem; border: 1px solid var(--blue-line); border-radius: var(--radius); background: var(--blue-tint); color: var(--ink); font-size: .8125rem }
+.audio-option-bubble::before { content: ''; position: absolute; inset-block-start: -.29rem; inset-inline-end: .56rem; inline-size: .5rem; block-size: .5rem; border-block-start: 1px solid var(--blue-line); border-inline-start: 1px solid var(--blue-line); background: inherit; transform: rotate(45deg) }
 input::placeholder { color: var(--muted-ink); opacity: 1 }
 input[type=checkbox] { accent-color: var(--primary) }
 .inline > input { flex: 1 1 11rem }

@@ -20,6 +20,46 @@ function tone(frame, hz) {
   return energy > frameSamples * 200 ** 2 && 2 * (sine * sine + cosine * cosine) > 0.8 * frameSamples * energy;
 }
 
+test('the compact meeting audio option is off by default and explains correction on demand', async ({page}) => {
+  const server = createApp({
+    webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
+    accessToken:'local-test-audio-help-no-credentials',
+  });
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  try {
+    await page.setViewportSize({width:1280,height:850});
+    await page.goto('http://127.0.0.1:' + server.address().port);
+    const opt = page.getByRole('checkbox',{name:/원본 음성 보관/});
+    const help = page.getByRole('button',{name:'원본 음성 보관 안내'});
+    await expect(opt).not.toBeChecked();
+    await expect(help).toBeVisible();
+
+    const box = await opt.boundingBox();
+    const trigger = await help.boundingBox();
+    const form = await opt.locator('xpath=ancestor::form').boundingBox();
+    expect(box.height).toBeLessThanOrEqual(24);
+    expect(Math.abs(box.y + box.height/2 - trigger.y - trigger.height/2)).toBeLessThanOrEqual(5);
+    expect(Math.min(box.x,trigger.x)).toBeGreaterThan(form.x + form.width/2);
+    expect(Math.abs(Math.max(box.x+box.width,trigger.x+trigger.width) - (form.x+form.width))).toBeLessThanOrEqual(16);
+
+    const correction = page.getByText(/다시 듣고 올바른 화자로 옮길/);
+    await expect(correction).not.toBeVisible();
+    await help.focus();
+    await help.press('Enter');
+    await expect(correction).toBeVisible();
+    await expect(help).toHaveAttribute('aria-expanded','true');
+    await expect(opt).not.toBeChecked();
+    await help.click();
+    await expect(correction).not.toBeVisible();
+    await expect(help).toHaveAttribute('aria-expanded','false');
+    await expect(opt).not.toBeChecked();
+  } finally {
+    await page.close();
+    await new Promise(done => server.close(done));
+  }
+});
+
 test('opted-in meetings replay the exact saved microphone samples at a later utterance after reload', async ({page}) => {
   let selectedPcm;
   const server = createApp({

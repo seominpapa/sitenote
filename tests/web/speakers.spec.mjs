@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { once } from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../../server/app.mjs';
 import { summaryMarkdown, transcriptMarkdown } from '../../src/records/markdown.ts';
@@ -135,6 +137,7 @@ test('optional correction moves only selected utterances and preserves source an
     await expect(menu).toHaveCount(0);
     await control.click();
     await expect(menu.getByRole('checkbox')).toHaveCount(3);
+    await expect(menu.getByText('CAM++ 설치 안내',{exact:true})).toHaveCount(0);
     const chosen = menu.getByRole('checkbox',{name:/김 과장이 맡겠습니다/});
     const source = page.locator('#moved[data-testid=transcript-turn]');
     const apply = async () => {
@@ -166,6 +169,100 @@ test('optional correction moves only selected utterances and preserves source an
   }
 });
 
+async function seedArchivedMeeting(page, note) {
+  return page.evaluate(({entry,id,turns}) => {
+    const store = (database,name,upgrade,write) => new Promise((resolve,reject) => {
+      const open = indexedDB.open(database,1);
+      open.onupgradeneeded = () => upgrade(open.result);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction(name,'readwrite');
+        write(tx);
+        tx.oncomplete = () => {db.close(); resolve();};
+        tx.onabort = () => {db.close(); reject(tx.error);};
+      };
+    });
+    return Promise.all([
+      store('sitenote','markdown',db => db.createObjectStore('markdown',{keyPath:'id'}),
+        tx => tx.objectStore('markdown').put(entry)),
+      store('sitenote-meeting-audio',['chunks','completed'],db => {
+        db.createObjectStore('chunks',{keyPath:['id','index']});
+        db.createObjectStore('completed');
+      },tx => {
+        const chunks = new Map();
+        for (const [i,turn] of turns.entries()) {
+          for (let start = turn.timeMs*24, stop = start + 3*24000; start < stop;) {
+            const index = Math.floor(start/96_000);
+            const offset = start%96_000;
+            const length = Math.min(stop-start,96_000-offset);
+            const chunk = chunks.get(index) ?? {id,index,pcm:new ArrayBuffer(192_000),captured:[]};
+            new Int16Array(chunk.pcm).fill(i === 1 ? -8_192 : 8_192,offset,offset+length);
+            chunk.captured.push([offset,offset+length]);
+            chunks.set(index,chunk);
+            start += length;
+          }
+        }
+        for (const chunk of chunks.values()) tx.objectStore('chunks').put(chunk);
+        tx.objectStore('completed').put(true,id);
+      }),
+    ]);
+  },{entry:{id:note.id,'transcript.md':transcriptMarkdown(note)},id:note.id,turns:note.turns});
+}
+
+test('CAM++ installation guide is opt-in when audio exists and never starts downloads', async ({page,context}) => {
+  const id = 'speaker-guide-test';
+  const title = '화자 모델 설치 안내 검증';
+  const speech = utterance('reference','meeting:a:1','보관된 회의 발언입니다.',2000);
+  const fixture = await mkdtemp(join(tmpdir(),'sitenote-install-guide-'));
+  const previousModel = process.env.SITENOTE_SPEAKER_MODEL;
+  let server;
+  try {
+    process.env.SITENOTE_SPEAKER_MODEL = join(fixture,'model-not-installed.onnx');
+    server = createApp({
+      webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
+      accessToken:'local-test-model-guide-no-credentials',
+    });
+  } finally {
+    if (previousModel === undefined) delete process.env.SITENOTE_SPEAKER_MODEL;
+    else process.env.SITENOTE_SPEAKER_MODEL = previousModel;
+    await rm(fixture,{recursive:true,force:true});
+  }
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  try {
+    const origin = 'http://127.0.0.1:' + server.address().port;
+    await page.goto(origin);
+    await seedArchivedMeeting(page,{...createRecord({id,kind:'meeting',title}),turns:[speech]});
+    await page.reload();
+    await page.getByTestId('record-item').filter({hasText:title}).click();
+    const guide = page.getByText('CAM++ 설치 안내',{exact:true});
+    await expect(guide).not.toBeVisible();
+    await page.getByText('화자 정정 (선택 사항)',{exact:true}).click();
+    await expect(guide).toBeVisible();
+    await expect(page.getByText(/npm install.*sherpa-onnx-node/).first()).not.toBeVisible();
+    await expect(page.getByRole('button',{name:'기준 발언과 비슷한 발언 찾기'})).toHaveCount(0);
+
+    const requests = [];
+    const downloads = [];
+    const popups = [];
+    function onRequest(request) { requests.push(request.url()); }
+    function onDownload(download) { downloads.push(download.url()); }
+    function onPopup(popup) { popups.push(popup); }
+    context.on('request',onRequest);
+    page.on('download',onDownload);
+    page.on('popup',onPopup);
+    await guide.click();
+    await expect(page.getByText(/npm install.*sherpa-onnx-node/).first()).toBeVisible();
+    expect(requests).toEqual([]);
+    expect(downloads).toEqual([]);
+    expect(popups).toEqual([]);
+  } finally {
+    await page.close();
+    await new Promise(done => server.close(done));
+  }
+});
+
 test('finding similar voices proposes archived utterances and only changes those the user confirms', async ({page}) => {
   const id = 'speaker-match-test';
   const title = '비슷한 발언을 찾을 회의';
@@ -187,44 +284,7 @@ test('finding similar voices proposes archived utterances and only changes those
   await once(server,'listening');
   try {
     await page.goto('http://127.0.0.1:' + server.address().port);
-    await page.evaluate(({entry,id,turns}) => {
-      const store = (database,name,upgrade,write) => new Promise((resolve,reject) => {
-        const open = indexedDB.open(database,1);
-        open.onupgradeneeded = () => upgrade(open.result);
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const tx = db.transaction(name,'readwrite');
-          write(tx);
-          tx.oncomplete = () => {db.close(); resolve();};
-          tx.onabort = () => {db.close(); reject(tx.error);};
-        };
-      });
-      return Promise.all([
-        store('sitenote','markdown',db => db.createObjectStore('markdown',{keyPath:'id'}),
-          tx => tx.objectStore('markdown').put(entry)),
-        store('sitenote-meeting-audio',['chunks','completed'],db => {
-          db.createObjectStore('chunks',{keyPath:['id','index']});
-          db.createObjectStore('completed');
-        },tx => {
-          const chunks = new Map();
-          for (const [i,turn] of turns.entries()) {
-            for (let start = turn.timeMs*24, stop = start + 3*24000; start < stop;) {
-              const index = Math.floor(start/96_000);
-              const offset = start%96_000;
-              const length = Math.min(stop-start,96_000-offset);
-              const chunk = chunks.get(index) ?? {id,index,pcm:new ArrayBuffer(192_000),captured:[]};
-              new Int16Array(chunk.pcm).fill(i === 1 ? -8_192 : 8_192,offset,offset+length);
-              chunk.captured.push([offset,offset+length]);
-              chunks.set(index,chunk);
-              start += length;
-            }
-          }
-          for (const chunk of chunks.values()) tx.objectStore('chunks').put(chunk);
-          tx.objectStore('completed').put(true,id);
-        }),
-      ]);
-    },{entry:{id,'transcript.md':transcriptMarkdown(note)},id,turns:note.turns});
+    await seedArchivedMeeting(page,note);
     await page.reload();
     await page.getByTestId('record-item').filter({hasText:title}).click();
     const source = id => page.locator('#'+id+'[data-testid=transcript-turn]');

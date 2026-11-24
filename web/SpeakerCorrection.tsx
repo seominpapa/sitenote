@@ -10,13 +10,32 @@ type Props = {
   save(edit:(latest:RecordData) => RecordData): Promise<void>;
   playAt?: (turn:Turn) => ReactNode;
   findSimilar?: (reference:Turn) => Promise<readonly string[]>;
-  similarityUnavailable?: string;
+  audioAvailable: boolean;
 };
 
 const newTarget = 'new';
 const groupPrefix = 'existing:';
+const camModelUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx';
 
-export function SpeakerCorrection({record,busy,save,playAt,findSimilar,similarityUnavailable}:Props) {
+function SpeakerModelSetup() {
+  return <details className="speaker-model-setup">
+    <summary>CAM++ 설치 안내</summary>
+    <p>모델로 비슷한 목소리의 발언을 찾고 싶을 때만 설치하세요. 발언을 다시 듣고 직접 옮길 때는 필요하지 않습니다.</p>
+    <ol>
+      <li>Node.js/npm이 설치된 PC에서 아래 명령으로 실행 모듈을 설치합니다.
+        <div><strong>Mac 터미널</strong><code>mkdir -p ~/.sitenote/speaker</code><code>npm install --prefix ~/.sitenote/speaker sherpa-onnx-node@2.0.3</code></div>
+        <div><strong>Windows PowerShell</strong><code>{'New-Item -ItemType Directory -Force "$HOME/.sitenote/speaker"'}</code>
+          <code>{'npm install --prefix "$HOME/.sitenote/speaker" sherpa-onnx-node@2.0.3'}</code></div>
+      </li>
+      <li>아래 주소를 브라우저 주소창에 붙여넣어 CAM++ 모델을 다운로드합니다.
+        <code>{camModelUrl}</code>
+      </li>
+      <li>다운로드한 파일을 <code>model.onnx</code>로 바꾸고 홈 폴더의 <code>.sitenote/speaker</code>에 넣은 뒤, Sitenote 앱 또는 웹앱 서버를 다시 시작합니다.</li>
+    </ol>
+  </details>;
+}
+
+export function SpeakerCorrection({record,busy,save,playAt,findSimilar,audioAvailable}:Props) {
   const turns = useMemo(() => record.turns.filter(turn => canCorrectMeetingSpeaker(record,turn)),[record]);
   const groups = useMemo(() => meetingSpeakerTargets(record),[record]);
   const [expanded,setExpanded] = useState(false);
@@ -123,7 +142,7 @@ export function SpeakerCorrection({record,busy,save,playAt,findSimilar,similarit
           기준 발언과 비슷한 발언 찾기
         </button>
         <p className="muted">실제 화자가 확실한 발언 하나만 선택해 주세요.</p>
-      </div> : similarityUnavailable && <p className="muted">{similarityUnavailable}</p>}
+      </div> : audioAvailable ? <SpeakerModelSetup /> : <p className="muted">비슷한 발언을 비교하려면 회의 시작 전에 원본 음성 보관을 선택하세요.</p>}
       <label>옮길 화자
         <select value={targetSelected ? target : ''} onChange={event=>setTarget(event.currentTarget.value)} disabled={disabled} required>
           <option value="">화자 선택</option>
