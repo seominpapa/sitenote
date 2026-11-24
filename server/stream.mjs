@@ -282,7 +282,9 @@ export function handleStream(client, options, browserSession = false) {
           api_key: options.sonioxKey, model: 'stt-rt-v6',
           audio_format: 'pcm_s16le', sample_rate: 24_000, num_channels: 1,
           language_hints: mode === 'consent' ? ['ko'] : ['ko', 'en'],
-          enable_speaker_diarization: mode !== 'consent', enable_endpoint_detection: true,
+          enable_speaker_diarization: mode !== 'consent',
+          // Keep more context for meeting diarization. Invited questions still use finalizeAfterPause.
+          enable_endpoint_detection: mode !== 'meeting',
           ...(meeting && {context:{general:[
             {key:'topic',value:meeting.title},
             ...(meeting.project ? [{key:'project',value:meeting.project}] : []),

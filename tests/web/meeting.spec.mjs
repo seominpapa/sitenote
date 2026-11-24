@@ -6,6 +6,7 @@ import { ordinaryQuestionPlan } from './voice-plan.mjs';
 
 const firstTurn = '다음 현장 점검은 금요일입니다.';
 const lastTurn = '안전 점검표도 가져오세요.';
+const otherClosingTurns = ['보호구도 확인하겠습니다.', '현장 안내는 제가 맡을게요.'];
 const questionPrefix = '이번 현장 점검은';
 const questionTail = ' 언제인가요?';
 const questions = [questionPrefix + questionTail, '안전 점검표는 누가 준비하나요?'];
@@ -173,9 +174,16 @@ test('answers only finalized meeting questions, then advances followup after a c
           }
           if (data === '') {
             if (connection === 2) return reply({finished:true});
-            if (inMeeting) meetingFlushed = true;
-            else followupSonioxFinalized = true;
-            reply({tokens: [sonioxTurn(inMeeting ? lastTurn : followupTail, '2', audioMs + 60)], finished: true});
+            if (inMeeting) {
+              meetingFlushed = true;
+              const closingAt = audioMs + 60;
+              [lastTurn, ...otherClosingTurns].forEach((text, index) => {
+                reply({tokens:[sonioxTurn(text, String(index + 2), closingAt)]});
+              });
+              return reply({finished:true});
+            }
+            followupSonioxFinalized = true;
+            reply({tokens:[sonioxTurn(followupTail, '2', audioMs + 60)], finished:true});
           }
         }, connection === 2 ? 950 : 0);
       }
@@ -364,6 +372,9 @@ test('answers only finalized meeting questions, then advances followup after a c
     await page.getByRole('button', {name: '녹음 종료'}).click();
     await expect(page.getByRole('heading', {level: 1, name: title})).toBeVisible();
     await expect(page.getByTestId('transcript-turn').filter({hasText: lastTurn})).toContainText('화자 2');
+    for (const [index, text] of otherClosingTurns.entries()) {
+      await expect(page.getByTestId('transcript-turn').filter({hasText:text})).toContainText(`화자 ${index + 3}`);
+    }
     expect(meetingFlushed).toBe(true);
     await expect(page.getByRole('heading', {name: 'AI 보충 질문을 시작할까요?'})).toBeVisible();
     expect(followupSessions).toBe(0);

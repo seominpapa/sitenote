@@ -17,6 +17,7 @@ export function sonioxTranscript() {
   let groups: Segment[] = [];
   let sealed = false;
   let watermark = 0;
+  let turnSequence = 0;
 
   return {
     receive(streamId: string, offsetMs: number, tokens: SonioxToken[], sectionAt: (time: number, token: SonioxToken) => Section): Change {
@@ -25,6 +26,7 @@ export function sonioxTranscript() {
         groups = [];
         sealed = false;
         watermark = 0;
+        turnSequence = 0;
       }
       const positions = new Map<string, number>();
       const changed = new Map<string, Turn>();
@@ -61,12 +63,14 @@ export function sonioxTranscript() {
           continue;
         }
         const position = punctuation ? `mark-${start}` : String(start);
-        const occurrence = positions.get(position) ?? 0;
-        positions.set(position, occurrence + 1);
+        // Count same-time pieces independently for each speaker and section, even across payloads.
+        const scope = JSON.stringify([section, speakerId, position]);
+        const occurrence = positions.get(scope) ?? 0;
+        positions.set(scope, occurrence + 1);
         const key = `${position}-${occurrence}`;
         const piece = { key, text: token.text, start, end };
         const sameTurn = (group: Segment) => group.turn.section === section && group.turn.speakerId === speakerId;
-        const priorIndex = groups.findIndex(group => (!punctuation || sameTurn(group)) && group.pieces.some(existing => existing.key === key));
+        const priorIndex = groups.findIndex(group => sameTurn(group) && group.pieces.some(existing => existing.key === key));
         if (priorIndex !== -1) {
           const group = groups[priorIndex];
           update(priorIndex, group, group.pieces.map(existing => existing.key === key ? piece : existing));
@@ -83,7 +87,7 @@ export function sonioxTranscript() {
           && start >= last.start && start - last.end < 1_500 && (punctuation || timeMs - previous.turn.timeMs < 15_000)) {
           update(groups.length - 1, previous, [...previous.pieces, piece]);
         } else if (!punctuation) {
-          const turn = { ...base, id: `soniox-${stream}-${key}`, text: token.text };
+          const turn = { ...base, id: `soniox-${stream}-${++turnSequence}`, text: token.text };
           groups = [...groups, { pieces: [piece], turn }];
           if (turn.text.trim()) changed.set(turn.id, turn);
         } else continue;

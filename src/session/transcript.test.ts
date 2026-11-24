@@ -1,9 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { sonioxTranscript, liveTranscript } from './transcript.ts';
+import { applyTurn, createRecord, speakerGroups } from '../records/core.ts';
 
 const token = (text: string, start_ms: number, end_ms: number, speaker = '1', is_final = true) =>
   ({ text, start_ms, end_ms, speaker, is_final });
+
+test('four speakers with the same timestamp keep separate records across payloads, replays, and revisions', () => {
+  const transcript = sonioxTranscript();
+  const receive = (tokens: Parameters<typeof transcript.receive>[2]) =>
+    transcript.receive('shared-start', 0, tokens, () => 'meeting');
+  const entries = [token('현장', 100, 160, '1'), token('안전', 100, 170, '2'),
+    token('일정', 100, 180, '3'), token('자재', 100, 190, '4')];
+  const suffix = token(' 점검', 100, 220, '3');
+  const turned = entries.flatMap((entry, index) => receive(index === 2 ? [entry, suffix] : [entry]).turns);
+  assert.equal(new Set(turned.map(turn => turn.id)).size, 4);
+  assert.deepEqual(receive([entries[3], entries[0], entries[2], suffix, entries[1]]).turns, []);
+  const revised = receive([token('납품', 100, 180, '3'), suffix]).turns;
+  assert.equal(revised.length, 1);
+  assert.equal(revised[0].id, turned[2].id);
+  assert.deepEqual(receive([token('납품', 100, 180, '3'), suffix]).turns, []);
+  const saved = [...turned, ...revised].reduce((record, turn) => applyTurn(record, turn),
+    createRecord({kind:'meeting', title:'겹치는 발언', id:'same-time-meeting'}));
+  assert.deepEqual(speakerGroups(saved).map(group => [group.label, group.firstTurn.text]),
+    [['화자 1', '현장'], ['화자 2', '안전'], ['화자 3', '납품 점검'], ['화자 4', '자재']]);
+});
 
 test('Soniox tails replace partial previews, persist finalized speech once, and preserve speaker IDs and timing', () => {
   const transcript = sonioxTranscript();

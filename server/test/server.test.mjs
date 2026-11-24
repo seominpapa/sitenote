@@ -128,7 +128,7 @@ test('meeting transcribes through Soniox and flushes final tokens without starti
   const stt = JSON.parse(son.ws.messages[0]);
   assert.equal(stt.model, 'stt-rt-v6');
   assert.equal(stt.enable_speaker_diarization, true);
-  assert.equal(stt.enable_endpoint_detection, true);
+  assert.equal(stt.enable_endpoint_detection, false, 'give ordinary meeting transcription more context for speaker diarization');
   assert.equal(stt.sample_rate, 24000);
   event(son.ws, undefined, { tokens: [{ text: '안녕', is_final: true, start_ms: 0, end_ms: 40, speaker: '1' }] });
   send({ type: 'audio', audio });
@@ -342,6 +342,7 @@ test('followup uses Soniox participant diarization and drains both providers ind
       await nextTick();
       assert.deepEqual(messages.filter(item => item.type === 'ready').map(item => item.scope), ['meeting', 'live']);
       assert.equal(JSON.parse(son.messages[0]).enable_speaker_diarization, true);
+      assert.equal(JSON.parse(son.messages[0]).enable_endpoint_detection, true);
       assert.deepEqual(son.messages.slice(1), [Buffer.from(audio, 'base64'), Buffer.alloc(2)]);
       assert.deepEqual(live.messages.slice(1).map(raw => JSON.parse(raw).audio), ['AAA=', 'AAA=']);
       assert.equal(messages.some(item => item.event?.delta === 'provider duplicate'), false);
@@ -1108,8 +1109,9 @@ test('slow recap reaches its deadline and only answers once from partial current
   assert.equal(voice(),live);
 });
 
-test('ordinary AI invitation falls back to Soniox after quiet, and old finalize ACKs cannot consume the next question', async (t) => {
-  const {client,son,voice,pcm,at}=setupOrdinaryAudio(t);
+test('personal AI invitation falls back to Soniox after quiet, and old finalize ACKs cannot consume the next question', async (t) => {
+  const {client,son,voice,pcm,at}=setupOrdinaryAudio(t,'personal');
+  assert.equal(JSON.parse(son.messages[0]).enable_endpoint_detection,true);
   const finalizations=()=>son.messages.filter(item=>typeof item==='string' && item.includes('"finalize"')).length;
   const queries=()=>jsonMessages(client,'search');
   pcm(6,4_000);
@@ -1166,6 +1168,42 @@ test('ordinary AI invitation falls back to Soniox after quiet, and old finalize 
   pcm(72);
   assert.equal(finalizations(),2,'a natural endpoint does not request a fallback');
   assert.deepEqual(queries().map(item=>item.query),['언제죠?','어디죠?','세 번째 질문의 답은 뭔가요?']);
+  assert.equal(son.readyState,1);
+});
+
+test('meeting Q&A manually finalizes consecutive questions on the same diarization stream', async (t) => {
+  const {client,son,voice,pcm,at}=setupOrdinaryAudio(t);
+  assert.equal(JSON.parse(son.messages[0]).enable_endpoint_detection,false);
+  const finalizations=()=>son.messages.filter(message=>message==='{"type":"finalize"}').length;
+  const queries=()=>jsonMessages(client,'search');
+  pcm(4,4000);
+  pcm(72);
+  assert.equal(finalizations(),0);
+  event(client,'ask',{timeMs:at()});
+  await Promise.resolve();
+
+  const questions=['언제 시작하나요?','누가 참석하나요?'];
+  for (const [index,text] of questions.entries()) {
+    const start=at();
+    pcm(4,4000);
+    speech(son,text,start,at(),false);
+    pcm(49);
+    assert.equal(finalizations(),index);
+    pcm(1);
+    assert.equal(finalizations(),index+1);
+    speech(son,text,start,start+80);
+    assert.equal(queries().length,index);
+    event(son,undefined,{tokens:[{text:'<fin>',is_final:true}]});
+    const query=queries().at(-1);
+    assert.equal(query.query,text);
+    event(client,'search_result',{id:query.id,context:''});
+    const nextVoice=voice();
+    nextVoice.open();
+    reply(nextVoice,'meeting-'+index,'확인했습니다.');
+    finishReply(t,nextVoice);
+    event(client,'question_ready');
+  }
+  assert.deepEqual(queries().map(item=>item.query),questions);
   assert.equal(son.readyState,1);
 });
 
