@@ -309,3 +309,10 @@ summary { width: fit-content; max-width: 100%; color: var(--ink); font-weight: 6
   .tile-icon { width: 3.5rem; height: 3.5rem }
   .tile-icon svg { width: 1.8rem; height: 1.8rem }
 }
+
+.meeting-player {
+  position:sticky; bottom:1rem; z-index:2; display:flex; flex-wrap:wrap; align-items:center; gap:.75rem;
+  box-shadow:0 5px 24px #20203022;
+}
+.meeting-player audio { max-width:100%; }
+.turn-play { margin-top:.45rem; }

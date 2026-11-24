@@ -5,7 +5,7 @@ import { readVoicePreview } from '../src/voice-preview.ts';
 import type { AiVoice } from '../server/voices.mjs';
 import type { CorrectionRequest } from '../src/transcript-correction.ts';
 
-export type Health = { ok: true; providers: { live: boolean; soniox: boolean; text: boolean } };
+export type Health = { ok: true; providers: { live: boolean; soniox: boolean; text: boolean }; speakerMatch?: boolean };
 export type ProviderKeys = { openaiKey?: string; sonioxKey?: string };
 type Summary = { markdown: string; questions: string[] };
 
@@ -116,4 +116,12 @@ export async function summarize(kind: 'personal' | 'meeting', transcript: string
     parts = merged;
   }
   return summarizePart([...parts, related].filter(Boolean).join('\n\n').slice(0, 45_000));
+}
+
+export async function requestSpeakerMatch(reference: string, candidates: string[]): Promise<(number|null)[]> {
+  const result = await request<{scores:unknown}>('/speaker-match', {reference,candidates});
+  if (!Array.isArray(result.scores) || result.scores.length !== candidates.length || !result.scores.every(
+    score => score === null || (typeof score === 'number' && Number.isFinite(score) && score >= -1 && score <= 1)
+  )) throw Error('화자 비교 결과를 확인할 수 없습니다.');
+  return result.scores;
 }

@@ -52,6 +52,8 @@ type Options = {
   mode: Mode;
   voice?: AiVoice;
   audio: Audio;
+  /** Local 24 kHz PCM16 microphone audio, positioned on the note's transcript timeline. */
+  archiveMeetingFrame?: (startSample: number, pcmBase64: string) => void;
   persist(turn: Turn): Promise<void>;
   search(query: string, beforeMs: number, pendingTurns: readonly Turn[], scope?: MeetingQuestionHistory['scope'], plan?: VoiceSearchPlan):
     Promise<string | {context: string; recap?: MeetingRecap}>;
@@ -76,12 +78,18 @@ type Incoming =
 const saveError = '원문을 저장하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도하세요.';
 const disconnected = '연결이 끊겼습니다. 저장된 원문을 유지했으며 연결이 끊긴 구간은 녹음되지 않았습니다.';
 const unflushed = '서버에서 마지막 전사 완료 신호를 받지 못했습니다. 이미 저장된 부분은 유지했습니다.';
+const samplesPerMs = 24;
 const validSearchPlan = (plan?: VoiceSearchPlan) => plan != null &&
   ['general','current','latest','related','newest_note'].includes(plan.scope) &&
   ['overview','opening','topic','prior-question'].includes(plan.range) &&
   typeof plan.terms === 'string' && plan.terms.length <= 300 && typeof plan.sameProject === 'boolean';
 // Keep the PCM frame length while removing audio before it leaves the device.
 const silentFrame = (frame: string) => frame.replace(/[^=]/g, 'A');
+const pcmSampleCount = (frame: string) => {
+  if (frame.length > 32_768 || frame.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(frame)) return 0;
+  const bytes = frame.length * 3 / 4 - (frame.endsWith('==') ? 2 : Number(frame.endsWith('=')));
+  return bytes % 2 === 0 ? bytes / 2 : 0;
+};
 
 function reactNativeSocket(url: string, token: string): Socket {
   const RNWebSocket = WebSocket as unknown as new (url: string, protocols: string[], options: { headers: Record<string, string> }) => Socket;
@@ -104,6 +112,8 @@ export function createVoiceSession(options: Options) {
   let captureControl: AbortController | undefined;
   let stoppingCapture: Promise<void> | undefined;
   let firstAudioAt: number | undefined;
+  let streamSamples = 0;
+  let archiveMeetingFrame = mode === 'meeting' ? options.archiveMeetingFrame : undefined;
   let connectingTimer: ReturnType<typeof setTimeout> | undefined;
   let saveTask: Promise<boolean> | undefined;
   let endTask: Promise<boolean> | undefined;
@@ -445,6 +455,7 @@ export function createVoiceSession(options: Options) {
     outputBlocked = false;
     suppressedInput = false;
     firstAudioAt = undefined;
+    streamSamples = 0;
     plansSearch = false;
     liveUnavailable = false;
     let current: Socket;
@@ -551,6 +562,21 @@ export function createVoiceSession(options: Options) {
     audio.setMicMuted?.(muted);
     patch({micMuted:muted});
   }
+  function keepMeetingFrame(frame: string, excluded: boolean, originMs: number) {
+    if (!archiveMeetingFrame) return;
+    const samples = pcmSampleCount(frame);
+    if (!samples) return;
+    const offset = Math.round(originMs * samplesPerMs) + streamSamples;
+    // Soniox receives silence (or separately transcribed question audio) during exclusions.
+    // Advance its sample clock without retaining audio from these intervals.
+    streamSamples += samples;
+    if (excluded) return;
+    try { archiveMeetingFrame(offset, frame); }
+    catch {
+      archiveMeetingFrame = undefined;
+      patch({error:'회의 음성을 저장하지 못했습니다. 전사는 계속됩니다.'});
+    }
+  }
   let subs: Array<{remove(): void}> = [];
   function start() {
     if (!subs.length) subs = [
@@ -569,6 +595,7 @@ export function createVoiceSession(options: Options) {
           if (send({type:'audio',audio:silent ? silentFrame(frame) : frame,...(silent || muted ? {suppressed:true} : {})})) {
             // The Soniox clock starts at the first PCM frame, after any local permission prompt.
             firstAudioAt ??= Math.max(0,time() - Math.round(frame.length / 64));
+            keepMeetingFrame(frame, silent || muted || engaged || state.playback || queueingPlayback > 0, firstAudioAt);
           }
         }
       }),

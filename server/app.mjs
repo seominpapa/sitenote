@@ -10,6 +10,7 @@ import { categoryResult, validCategories } from './categories.mjs';
 import { typedFollowupResult, validTypedFollowup } from './typed-followup.mjs';
 import { validVoicePreview, voicePreview } from './voice-preview.mjs';
 import { transcriptCorrectionResult, validTranscriptCorrectionRequest } from './transcript-corrections.mjs';
+import { makeSpeakerMatcher, parseSpeakerRequest, speakerRequestBytes } from './speaker-matcher.mjs';
 
 const digest = (secret) => createHash('sha256').update(secret).digest();
 const maxBytes = 200_000;
@@ -63,6 +64,7 @@ export function createApp(config) {
     return !desktopHash || (typeof header === 'string' && header.length === 64 && timingSafeEqual(digest(header), desktopHash));
   };
   const keyStore = web && config.webKeysFile && createKeyStore(config.webKeysFile);
+  const speakerMatcher = web && makeSpeakerMatcher(process.env, config.speakerEmbedder);
   const options = {
     ...serverConfig,
     textModel: config.textModel || 'gpt-5.4-mini',
@@ -72,7 +74,8 @@ export function createApp(config) {
     get openaiKey() { return keyStore && keyStore.key('openaiKey') || config.openaiKey; },
     get sonioxKey() { return keyStore && keyStore.key('sonioxKey') || config.sonioxKey; },
   };
-  const health = () => ({ ok: true, providers: { live: Boolean(options.openaiKey), soniox: Boolean(options.sonioxKey), text: Boolean(options.openaiKey) } });
+  const health = () => ({ ok: true, providers: { live: Boolean(options.openaiKey), soniox: Boolean(options.sonioxKey), text: Boolean(options.openaiKey) },
+    ...(speakerMatcher && {speakerMatch:true}) });
   const limits = new Map();
   const allow = (key, cap) => {
     const now = Date.now();
@@ -85,6 +88,29 @@ export function createApp(config) {
   const streams = new WebSocketServer({ noServer: true, maxPayload: 200_000, perMessageDeflate: false });
   let textPending = 0;
   let previewPending = false;
+  let speakerPending = false;
+  async function compareSpeakers(req, res) {
+    if (!web.authenticated(req)) return json(res, 401, {error:'로컬 앱을 새로 열어 다시 시도하세요.'});
+    if (!speakerMatcher) return json(res, 503, {error:'로컬 화자 비교 모델을 설치한 뒤 Sitenote를 다시 시작하세요.'});
+    if (!jsonType(req, speakerRequestBytes)) return json(res, 400, {error:'음성 요청 형식 또는 크기를 확인하세요.'});
+    if (speakerPending || !allow('/speaker-match', 30)) return json(res, 429, {error:'화자 비교가 진행 중입니다. 잠시 뒤 다시 시도하세요.'});
+    speakerPending = true;
+    const control = new AbortController();
+    const cancel = () => control.abort();
+    res.once('close', cancel);
+    try {
+      const clips = parseSpeakerRequest(await readJson(req, speakerRequestBytes).catch(() => null));
+      if (res.destroyed) return;
+      if (!clips) return json(res, 400, {error:'2–6초 길이의 PCM 음성만 비교할 수 있습니다.'});
+      const result = await speakerMatcher(clips, control.signal);
+      if (!res.destroyed) return json(res, 200, result);
+    } catch {
+      if (!res.destroyed) return json(res, 503, {error:'로컬 화자 비교를 실행할 수 없습니다. 모델과 설치 상태를 확인하세요.'});
+    } finally {
+      res.off('close', cancel);
+      speakerPending = false;
+    }
+  }
   async function preview(req, res) {
     const size = 256;
     const data = jsonType(req, size) && await readJson(req, size).catch(() => null);
@@ -134,6 +160,7 @@ export function createApp(config) {
     const path = req.url;
     if (req.method === 'GET' && path === '/health') return json(res, 200, health());
     if (req.method === 'POST' && path === '/v1/voice-preview') return preview(req, res);
+    if (req.method === 'POST' && path === '/speaker-match' && web) return compareSpeakers(req, res);
     const route = textRoutes.get(path);
     if (req.method !== 'POST' || !route) return json(res, 404, { error: '요청을 찾을 수 없습니다.' });
     const {size, rate, valid, result} = route;

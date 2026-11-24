@@ -9,6 +9,7 @@ import { appendTypedFollowup, type TypedPair } from '../src/typedFollowup.ts';
 import { answer, classifyRecords, correctTranscription, health, saveKeys, summarize, type Health, type ProviderKeys } from './api.ts';
 import { applyTranscriptCorrections, canCorrectTranscript, requestTranscriptCorrections } from '../src/transcript-correction.ts';
 import { createWebAudio } from './audio.ts';
+import { createMeetingArchive, removeMeetingArchive } from './meeting-archive.ts';
 import { DesktopUpdate } from './desktop-update.tsx';
 import { noteFiles, type NoteFolder } from './note-files.ts';
 import { Icon, type Jump } from './ui.tsx';
@@ -20,9 +21,9 @@ import { loadAiVoice, saveAiVoice } from './voice-settings.tsx';
 import './style.css';
 
 type Session = ReturnType<typeof createVoiceSession>;
-type Active = { session: Session; audio: ReturnType<typeof createWebAudio>; id: string; mode: Mode };
+type Active = { session: Session; audio: ReturnType<typeof createWebAudio>; id: string; mode: Mode; archive?: ReturnType<typeof createMeetingArchive> };
 type Page = { name: 'home' | 'search' | 'settings' } | { name: 'detail'; id: string; part?: string; offerFollowup?: boolean; consentAudio?: ConsentAudio; typedFollowup?: boolean };
-type RecordInfo = { title: string; project?: string };
+type RecordInfo = { title: string; project?: string; keepAudio?: boolean };
 const idle: Snapshot = { phase: 'idle', paused: false, transcriptionPaused: false, micMuted: false, capturing: false,
   playback: false, liveReady: false, sonioxReady: false, partials: [], references: [], saving: false };
 const inactive = () => idle;
@@ -202,6 +203,8 @@ function App() {
     function closeAudio() {
       active?.session.dispose();
       void active?.audio.dispose();
+      // A completed archive is retained; an interrupted recording drops unpublished audio.
+      void active?.archive?.discardIfUnfinished().catch(() => {});
     }
     window.addEventListener('beforeunload', beforeLeave);
     window.addEventListener('pagehide', closeAudio);
@@ -256,6 +259,7 @@ function App() {
     const audio = prepared?.take() ?? createWebAudio({bargeIn:mode !== 'followup', recoverTail:mode === 'followup'});
     const unlocked = audio.unlock();
     void run(async () => {
+      let archive: Active['archive'];
       try {
         if (mode === 'followup' && page.name === 'detail' && page.offerFollowup) setPage({ name: 'detail', id: page.id });
         await unlocked;
@@ -267,9 +271,11 @@ function App() {
         const record = existing ?? createRecord({ id: crypto.randomUUID(), kind: mode === 'meeting' ? 'meeting' : 'personal', ...info });
         if (!existing) await records.create(record);
         publish(record);
+        if (mode === 'meeting' && info?.keepAudio) archive = createMeetingArchive(record.id);
         const latest = () => current.current.find(item => item.id === record.id) ?? record;
         const session = createVoiceSession({
           baseUrl: location.origin, token: '', mode, audio, voice: aiVoice,
+          archiveMeetingFrame: archive?.appendFrame,
           connect: url => new WebSocket(url) as unknown as ReturnType<NonNullable<Parameters<typeof createVoiceSession>[0]['connect']>>,
           timeMs: () => Math.max(0, Date.now() - Date.parse(record.createdAt)),
           getContext: () => liveContext(latest(), mode === 'followup').context,
@@ -296,9 +302,10 @@ function App() {
           },
         });
         setNotice('');
-        setActive({ session, audio, id: record.id, mode });
+        setActive({ session, audio, id: record.id, mode, archive });
         session.start();
       } catch (error) {
+        await archive?.discard().catch(() => {});
         await audio.dispose();
         throw error;
       }
@@ -394,10 +401,17 @@ function App() {
           return;
         }
         const record = current.current.find(item => item.id === active.id);
+        let audioIssue = '';
+        if (active.archive) {
+          try {
+            if (!await active.archive.finish()) audioIssue = '재생할 회의 음성을 저장하지 못했습니다.';
+            if (!await records.load(active.id)) await removeMeetingArchive(active.id);
+          } catch { audioIssue = '회의 음성을 저장하지 못했습니다. 원문은 저장되어 있습니다.'; }
+        }
         offered = active.mode === 'meeting' && !!record?.turns.some(turn => turn.role !== 'ai');
         setActive(undefined);
         setPage({ name: 'detail', id: active.id, offerFollowup: offered, consentAudio: offered ? prepared : undefined });
-        setNotice(result.flushed ? '' : '연결이 끝나기 전에 받은 원문만 저장했습니다.');
+        setNotice([result.flushed ? '' : '연결이 끝나기 전에 받은 원문만 저장했습니다.', audioIssue].filter(Boolean).join(' '));
         if (record && offered) void saveSummary(record);
         else if (record) await saveSummary(record);
       } finally {
@@ -424,7 +438,9 @@ function App() {
       current.current = current.current.filter(item => !keys.has(item.id));
       setList(current.current);
       setPage(currentPage => currentPage.name === 'detail' && keys.has(currentPage.id) ? { name: 'home' } : currentPage);
-      if (!noteFiles()) setNotice(multiple ? `기록 ${keys.size}개를 삭제했습니다.` : '기록을 삭제했습니다.');
+      const audioRemoval = await Promise.allSettled([...keys].map(removeMeetingArchive));
+      if (audioRemoval.some(result => result.status === 'rejected')) setNotice('노트는 삭제했지만 이 PC의 음성 보관을 지우지 못했습니다.');
+      else if (!noteFiles()) setNotice(multiple ? `기록 ${keys.size}개를 삭제했습니다.` : '기록을 삭제했습니다.');
     });
   }
 
@@ -614,9 +630,10 @@ function App() {
             rename={(id, name) => void run(async () => {
               await editRecord(record.id, latest => renameSpeaker(latest, id, name));
             })}
+            reassign={edit => editRecord(record.id, edit)} speakerMatch={connected?.speakerMatch}
             remove={() => deleteSelection([record.id])} />
           : <>
-            <StartCards startPersonal={(title, project) => start('personal', { title, project })} startMeeting={(title, project) => start('meeting', { title, project })}
+            <StartCards startPersonal={(title, project) => start('personal', { title, project })} startMeeting={(title, project, keepAudio) => start('meeting', { title, project, keepAudio })}
               disabled={loading || busy} />
             <RecordList records={list} loading={loading} busy={busy} open={open} remove={id => deleteSelection([id])}
               importDocument={noteFiles() ? importDocument : undefined}

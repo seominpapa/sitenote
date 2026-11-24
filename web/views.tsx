@@ -12,6 +12,9 @@ import { categoryTree, type CategoryNode } from './library.ts';
 import { listenForVoiceConsent, type ConsentAudio, type ConsentState } from './voice-consent.ts';
 import { pendingTypedQuestions, type TypedPair } from '../src/typedFollowup.ts';
 import { TypedFollowup } from './typed-followup.tsx';
+import { SpeakerCorrection } from './SpeakerCorrection.tsx';
+import { useMeetingPlayback } from './meeting-playback.tsx';
+import { findSimilarMeetingTurns } from './speaker-match.ts';
 import { VoiceSettings } from './voice-settings.tsx';
 import type { AiVoice } from '../server/voices.mjs';
 
@@ -19,19 +22,22 @@ export type LibraryView = 'date' | 'category';
 export const categoryBatchLimit = 120;
 const describe = (record: RecordData) => [date.format(new Date(record.createdAt)), record.project].filter(Boolean).join(' · ');
 
-type StartRecording = (title: string, project?: string) => void;
+type StartRecording = (title: string, project?: string, keepAudio?: boolean) => void;
 
 function RecordingForm({ titlePrefix, placeholder, start, disabled }: {
   titlePrefix: '개인 대화' | '회의'; placeholder: string; start: StartRecording; disabled: boolean;
 }) {
   const [title, setTitle] = useState('');
   const [project, setProject] = useState('');
+  const [keepAudio, setKeepAudio] = useState(false);
   return <form className="recording-form" onSubmit={event => {
     event.preventDefault();
-    if (title.trim()) start(title.trim(), project.trim() || undefined);
+    if (title.trim()) start(title.trim(), project.trim() || undefined, keepAudio);
   }}>
     <label>{titlePrefix} 제목<input value={title} onChange={event => setTitle(event.target.value)} maxLength={120} placeholder={placeholder} required /></label>
     <label>{titlePrefix} 프로젝트<input value={project} onChange={event => setProject(event.target.value)} maxLength={120} placeholder="선택 입력" /></label>
+    {titlePrefix === '회의' && <label className="checkbox"><input type="checkbox" checked={keepAudio} disabled={disabled}
+      onChange={event => setKeepAudio(event.target.checked)} /> 원본 음성 보관 (발언별로 다시 듣기)</label>}
     <button className="button primary" disabled={disabled || !title.trim()}>{titlePrefix} 시작 <Icon name="arrow" /></button>
   </form>;
 }
@@ -641,15 +647,17 @@ type NoteEdits = { title?: string; project?: string; allowInMeetings?: boolean; 
 
 export function Detail({ record, related, part, busy, open, back, summarize, correctTranscript, followup, offerFollowup, followupIssue, consentAudio,
   typedFollowup, typedAIAvailable, openTypedFollowup, closeTypedFollowup, loadTypedFollowup, saveTypedFollowup,
-  dismissFollowup, keySettings, save, rename, remove }: {
+  dismissFollowup, keySettings, save, rename, reassign, speakerMatch, remove }: {
   record: RecordData; related: Evidence[]; part?: string; busy: boolean; open: Jump; back: () => void; summarize: () => void;
   correctTranscript?: () => void; followup: () => void;
   offerFollowup: boolean; followupIssue?: string; consentAudio?: ConsentAudio; dismissFollowup: () => void; keySettings: () => void;
   typedFollowup: boolean; typedAIAvailable: boolean; openTypedFollowup(): void; closeTypedFollowup(): void;
   loadTypedFollowup(): Promise<RecordData | undefined>; saveTypedFollowup(pair: TypedPair): Promise<void>;
   save(edits: NoteEdits): void; rename(speakerId: string, name: string): void; remove(): void;
+  reassign(edit: (latest: RecordData) => RecordData): Promise<void>; speakerMatch?: boolean;
 }) {
   const editBaseline = useRef(new Map<string, string | boolean>());
+  const audio = useMeetingPlayback(record);
   useEffect(() => {
     const target = part && document.getElementById(summarySourceAnchor.test(part) ? 'summary' : part);
     if (target) {
@@ -729,8 +737,13 @@ export function Detail({ record, related, part, busy, open, back, summarize, cor
     <SpeakerNames record={record} busy={busy} rename={rename} />
     <h2>{record.originalFilename ? `문서 본문 · ${record.originalFilename}` : `원문 · ${original.length}개 발언`}</h2>
     {original.length ? <Transcript turns={original} record={record} originalAt={part} afterTurn={turn => record.originalFilename && turn.id === part
-      ? <OriginalFile id={record.id} /> : answerSources(turn)} /> : <div className="empty">아직 전사된 발언이 없습니다.</div>}
+      ? <OriginalFile id={record.id} /> : <>{audio.playAt(turn)}{answerSources(turn)}</>} /> : <div className="empty">아직 전사된 발언이 없습니다.</div>}
     {!!supplemental.length && <><h2>회의 후 보충 질문 · {supplemental.length}개 발언</h2><Transcript turns={supplemental} record={record} originalAt={part} afterTurn={answerSources} /></>}
+    <SpeakerCorrection key={record.id} record={record} busy={busy} save={reassign} playAt={audio.playAt}
+      findSimilar={audio.available && speakerMatch ? turn => findSimilarMeetingTurns(record,turn) : undefined}
+      similarityUnavailable={audio.available ? (!speakerMatch ? '비슷한 발언을 비교하려면 이 PC에 화자 비교 모델을 설치하세요.' : undefined)
+        : '비슷한 발언을 비교하려면 회의 시작 전에 원본 음성 보관을 선택하세요.'} />
+    {audio.player}
   </section>;
 }
 

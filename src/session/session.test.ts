@@ -9,6 +9,7 @@ function setup(mode: 'meeting' | 'personal' | 'followup', overrides: {
   playReply?: (value: string) => Promise<void>;
   voice?: AiVoice;
   planSearch?: boolean;
+  archiveMeetingFrame?: (startSample: number, pcmBase64: string) => void;
 } = {}) {
   const sockets: Array<ReturnType<typeof fakeSocket>> = [];
   const written = new Map<string, Turn>();
@@ -31,6 +32,7 @@ function setup(mode: 'meeting' | 'personal' | 'followup', overrides: {
   const session = createVoiceSession({
     baseUrl:'https://sitenote.local', token:'user-token', mode, audio, timeMs:() => now, voice:overrides.voice,
     getContext:() => '최근 원문',
+    archiveMeetingFrame:overrides.archiveMeetingFrame,
     ...(overrides.planSearch && {getQuestionMeeting:() => ({title:'현장 일정'})}),
     connect(url, token) {
       assert.equal(url, 'wss://sitenote.local/stream');
@@ -83,6 +85,77 @@ const live = (eventType: string, id: string, delta: string, start_ms = 0) => ({
 });
 const speaker = (start_ms: number, text: string, id = '2') => ({ type:'soniox', streamId:'meeting-0', offsetMs:10_000,
   tokens:[{ start_ms,end_ms:start_ms + 80,text,is_final:true,speaker:id }] });
+
+const pcm = (n: number, byte: number) => Buffer.alloc(n * 2, byte).toString('base64');
+
+test('the optional archive uses the Soniox sample clock and skips paused, muted, suppressed and invited AI input', async t => {
+  const archived: [number,string][] = [];
+  const {session,sockets,written,mic,setTime} = setup('meeting',{
+    archiveMeetingFrame: (sample,base64) => archived.push([sample,base64]),
+  });
+  t.after(() => session.dispose());
+  session.start();
+  sockets[0].open();
+  sockets[0].receive({type:'ready',scope:'meeting'});
+  await tick();
+  mic({audio:pcm(480,1)});
+  setTime(10_500);
+  session.setTranscriptionPaused(true);
+  mic({audio:pcm(480,2)});
+  session.setTranscriptionPaused(false);
+  session.setMicMuted(true);
+  mic({audio:pcm(480,3)});
+  session.setMicMuted(false);
+  mic({audio:pcm(480,4),suppressed:true});
+  session.ask();
+  sockets[0].receive({type:'ready',scope:'live'});
+  mic({audio:pcm(480,5)});
+  session.leave();
+  mic({audio:pcm(480,6)});
+  sockets[0].receive(speaker(100,'저장된 문장'));
+  await tick();
+  assert.equal(archived.length,2);
+  assert.deepEqual(archived,[[9_980 * 24,pcm(480,1)],[10_080 * 24,pcm(480,6)]]);
+  assert.equal([...written.values()][0]?.timeMs,archived[1][0] / 24);
+
+  sockets[0].io.close();
+  await session.reconnect();
+  sockets[1].open();
+  sockets[1].receive({type:'ready',scope:'meeting'});
+  setTime(12_000);
+  mic({audio:pcm(480,7)});
+  sockets[1].receive({...speaker(0,'재연결 다음 문장'),streamId:'meeting-1'});
+  await tick();
+  assert.deepEqual(archived[2],[11_980 * 24,pcm(480,7)]);
+  assert.equal([...written.values()].find(turn => turn.text === '재연결 다음 문장')?.timeMs,archived[2][0] / 24);
+});
+
+test('the optional meeting archive neither captures other modes nor interrupts transcription on local error', async t => {
+  const called: string[] = [];
+  const instances = (['personal','followup','meeting'] as const).map(mode => setup(mode,{
+    archiveMeetingFrame: () => {
+      called.push(mode);
+      throw Error('disk error');
+    },
+  }));
+  for (const {session,sockets,mic} of instances) {
+    t.after(() => session.dispose());
+    session.start();
+    sockets[0].open();
+    await tick();
+    sockets[0].receive({type:'ready',scope:'meeting'});
+    mic({audio:pcm(480,1)});
+    mic({audio:pcm(480,2)});
+    assert.equal(sockets[0].sent.filter(msg => msg.type === 'audio').length,2);
+  }
+  const last = instances.at(-1)!;
+  last.sockets[0].receive(speaker(0,'전사가 계속됨'));
+  await tick();
+  assert.equal(last.session.getSnapshot().phase,'recording');
+  assert.match(last.session.getSnapshot().error ?? '',/음성.*저장/);
+  assert.equal([...last.written.values()][0]?.text,'전사가 계속됨');
+  assert.deepEqual(called,['meeting']);
+});
 
 test('voice question keeps recording on an old server and rejects search without a model plan', async t => {
   const {session,sockets,mic} = setup('meeting',{planSearch:true});

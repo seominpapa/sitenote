@@ -1,0 +1,18 @@
+.speaker-correction-list {
+  max-block-size: 24rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-block: 1px solid var(--divider);
+  padding-inline: .5rem;
+}
+.speaker-correction-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: .5rem;
+  padding-block: .5rem;
+}
+.speaker-correction-row + .speaker-correction-row { border-block-start: 1px solid var(--divider) }
+.speaker-correction-row label.checkbox { align-items: flex-start }
+.speaker-correction-row label > span { min-width: 0; overflow-wrap: anywhere }
+.speaker-correction-row small { display: block; margin-block-end: .2rem }

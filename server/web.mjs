@@ -47,7 +47,7 @@ export function createLocalWeb(root) {
       if (home) {
         headers['Set-Cookie'] = 'sitenote_session=' + key.toString('hex') + '; Path=/; HttpOnly; SameSite=Strict';
         headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-          "connect-src 'self' ws://" + host(req) + "; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; img-src 'self' data:";
+          "connect-src 'self' ws://" + host(req) + "; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; img-src 'self' data:; media-src 'self' blob:";
         headers['Referrer-Policy'] = 'no-referrer';
       }
       res.writeHead(200, headers);
