@@ -7,6 +7,7 @@ const chunkSamples = PCM_RATE * 4;
 const maxPendingChunks = 8;
 const maxPreviewMs = 60_000;
 const defaultPreviewMs = 30_000;
+export const meetingAudioWindowMs = 12_000;
 
 type Interval = [start: number, end: number];
 type Chunk = { id: string; index: number; pcm: ArrayBuffer; captured: Interval[] };
@@ -58,6 +59,15 @@ export function removeMeetingArchive(id: string): Promise<void> {
 export async function hasMeetingArchive(id: string): Promise<boolean> {
   assertId(id);
   return (await transact('readonly', tx => tx.objectStore('completed').get(id))) === true;
+}
+
+/** Reads a single last chunk, including archives from before whole-meeting playback. */
+export async function meetingAudioDuration(id: string): Promise<number | undefined> {
+  if (!await hasMeetingArchive(id)) return;
+  const last = await transact('readonly', tx => tx.objectStore('chunks')
+    .openCursor(chunkRange(id, 0, Number.MAX_SAFE_INTEGER), 'prev'));
+  const chunk = last?.value as Chunk | undefined;
+  if (chunk) return (chunk.index * chunkSamples + (chunk.captured.at(-1)?.[1] ?? 0)) / samplesPerMs;
 }
 
 function newChunk(id: string, index: number): Chunk {
@@ -173,6 +183,28 @@ function wave(pcm: Uint8Array<ArrayBuffer>): Blob {
   return new Blob([header.buffer, pcm], {type:'audio/wav'});
 }
 
+function chunksAt(id: string, start: number, end: number): Promise<Chunk[]> {
+  return transact('readonly', tx => tx.objectStore('chunks').getAll(chunkRange(id,
+    Math.floor(start / chunkSamples), Math.floor((end - 1) / chunkSamples))));
+}
+
+/** A bounded window for continuous listening. Keeping holes silent preserves seek positions. */
+export async function readMeetingAudioWindow(id: string, startMs: number, endMs: number): Promise<Blob | undefined> {
+  const start = Math.round(startMs * samplesPerMs);
+  const end = Math.round(Math.min(endMs, startMs + meetingAudioWindowMs) * samplesPerMs);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || !await hasMeetingArchive(id)) return;
+  const pcm = new Uint8Array((end - start) * 2);
+  for (const chunk of await chunksAt(id, start, end)) {
+    const offset = chunk.index * chunkSamples;
+    for (const [first, last] of chunk.captured) {
+      const from = Math.max(start, offset + first);
+      const to = Math.min(end, offset + last);
+      if (from < to) pcm.set(new Uint8Array(chunk.pcm, (from - offset) * 2, (to - from) * 2), (from - start) * 2);
+    }
+  }
+  return wave(pcm);
+}
+
 /** Read a bounded WAV starting on the requested note timestamp, leaving holes silent. */
 export async function readMeetingAudio(id: string, startMs: number, endMs = startMs + defaultPreviewMs,
   options: {minimumCapturedMs?: number; requireContinuous?: boolean; stopAtGap?: boolean} = {}): Promise<Blob | undefined> {
@@ -180,8 +212,7 @@ export async function readMeetingAudio(id: string, startMs: number, endMs = star
   const start = Math.round(startMs * samplesPerMs);
   const end = Math.round(Math.min(endMs, startMs + maxPreviewMs) * samplesPerMs);
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || !await hasMeetingArchive(id)) return;
-  const chunks = await transact<Chunk[]>('readonly', tx => tx.objectStore('chunks').getAll(chunkRange(id,
-    Math.floor(start / chunkSamples), Math.floor((end - 1) / chunkSamples))));
+  const chunks = await chunksAt(id, start, end);
   const pcm = new Uint8Array((end - start) * 2);
   let playedSamples = 0;
   let capturedSamples = 0;

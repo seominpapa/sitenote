@@ -286,7 +286,7 @@ function inferVoiceSearch(query: string): VoiceSearchPlan {
 
 function overviewEvidence(target: RecordData, isMeeting: boolean) {
   const keyPassages = new Map<string, Evidence>();
-  for (const passage of summaryPassages(target).slice(0, 6)) {
+  for (const passage of freshSummaryPassages(target).slice(0, 6)) {
     if (!topicWords(passage.text).length) continue;
     const original = supportingTurn(passage, target.turns, [], []);
     if (original) keyPassages.set(original.turn.id,
@@ -317,7 +317,7 @@ function topicalEvidence(records: readonly RecordData[], terms: string[], prior:
       const hit = queryMatch(transcriptText(turn),terms,prior) ?? queryMatch(turn.text,terms,prior);
       if (hit) add(turn, hit.word, hit.score);
     }
-    const summaries = summaryPassages(record).flatMap(passage => {
+    const summaries = freshSummaryPassages(record).flatMap(passage => {
       const hit = queryMatch(passage.text, terms, prior);
       return hit ? [{passage,...hit}] : [];
     }).sort((a,b) => b.score - a.score).slice(0, 4);
@@ -372,6 +372,10 @@ function summaryEvidence(record: RecordData, passage: SummaryPassage): Evidence 
     reference:ref(record.id, passage.id), targetId:passage.id, summaryOnly:true};
 }
 
+function freshSummaryPassages(record: RecordData): SummaryPassage[] {
+  return record.summaryNeedsSpeakerRefresh ? [] : summaryPassages(record);
+}
+
 export function summarySourceEvidence(record: RecordData, targetId: string): Evidence | undefined {
   if (!summarySourceAnchor.test(targetId)) return;
   const passages = summaryPassages(record).filter(item => item.id === targetId);
@@ -423,7 +427,7 @@ function recordMatches(record: RecordData, terms: string[], prior: string[], lib
     if (score < 2) continue;
     matches.push({ evidence: { ...evidence, text: clip(turn.text, current.matchWord || previous.matchWord) }, score: score + titleScore * 0.25 });
   }
-  if (record.summary) {
+  if (record.summary && !record.summaryNeedsSpeakerRefresh) {
     const current = match(record.summary, terms);
     const previous = match(record.summary, prior);
     const score = current.score + previous.score * (terms.length ? 0.45 : 1);

@@ -52,8 +52,9 @@ test('transcript correction keeps the raw speech, speaker, and timestamp after r
     await note.click();
     const turn = page.getByTestId('transcript-turn').filter({hasText:'다시 점검합니다.'});
     await expect(turn.getByText(raw,{exact:true})).toBeVisible();
-    await expect(page.getByText(/OpenAI에 보냅니다/)).toBeVisible();
-    await page.getByRole('button',{name:'전사 보정',exact:true}).click();
+    const correct = page.getByRole('button',{name:'전사 보정',exact:true});
+    await expect(correct).toHaveAccessibleDescription(/OpenAI에 보내.*보정 전 원문 보기.*Markdown 내보내기/);
+    await correct.click();
     await expect(turn.getByText(corrected,{exact:true})).toBeVisible();
     await expect(turn).toContainText(/00:00:04.+AI 보정/);
     expect(providerInputs).toHaveLength(1);

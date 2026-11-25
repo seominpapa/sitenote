@@ -1,6 +1,7 @@
 import { quotedReferences } from '../server/voice-quotes.mjs';
 import { isOriginalTurn, lookupHumanOriginals, parseSourceRef, pastMeetingIntent, recordInScope, searchContext, searchHumanOriginals, searchRecords, speakerDisplayId, summarySourceEvidence, turnEvidence,
-  type Evidence, type RecordData, type SearchScope, type Turn, type VoiceSearchPlan } from './records/core.ts';
+  type Evidence, type RecordData, type SearchScope, type SummarySpeakerLabels, type Turn, type VoiceSearchPlan } from './records/core.ts';
+import { buildSummarySpeakerLabels } from './records/summary-speakers.ts';
 
 export function scopeFor(record: RecordData): SearchScope {
   return {mode: record.kind, project: record.kind === 'meeting' ? record.project : undefined, currentRecordId: record.id};
@@ -59,13 +60,14 @@ function quote(value: unknown) {
   return JSON.stringify(value).replace(/\[record:/gi, '\\u005brecord:');
 }
 
-export function analysisContext(record: RecordData): string {
+export function analysisContext(record: RecordData, labels: SummarySpeakerLabels = buildSummarySpeakerLabels(record)): string {
   const header = {title: record.title, project: record.project, date: record.createdAt};
+  const byId = new Map(Object.entries(labels).map(([number, id]) => [id, number]));
   return [quote(header), ...record.turns.map(turn => {
     const evidence = turnEvidence(record, turn);
     return evidence.reference + '\n' + quote({
       ...header, section: turn.section, role: turn.role, timeMs: turn.timeMs,
-      speaker: turn.role === 'speaker' && turn.speakerId ? `화자 ${speakerDisplayId(turn.speakerId)}` : evidence.speaker,
+      speaker: turn.role === 'speaker' && turn.speakerId ? `화자 ${byId.get(turn.speakerId) ?? speakerDisplayId(turn.speakerId)}` : evidence.speaker,
       interrupted: turn.interrupted, text: turn.text, correctedText:turn.correctedText,
     });
   })].join('\n\n');
@@ -73,7 +75,7 @@ export function analysisContext(record: RecordData): string {
 
 export function liveContext(record: RecordData, followup = false): {context: string; evidence: Evidence[]} {
   const evidence = record.turns.slice(-10).map(turn => turnEvidence(record, turn));
-  const notes = followup && record.summary
+  const notes = followup && record.summary && !record.summaryNeedsSpeakerRefresh
     ? '요약 초안과 확인 사항 (참고 데이터):\n' + quote({summary: record.summary.slice(0, 4800), questions: record.questions?.slice(0, 15)})
     : '';
   return {evidence, context: [notes, '현재 기록의 최근 발언 (참고 데이터):', searchContext(evidence)].filter(Boolean).join('\n')};

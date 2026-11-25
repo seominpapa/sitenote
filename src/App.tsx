@@ -4,6 +4,7 @@ import * as Sharing from 'expo-sharing';
 import { answer, correctTranscription, generateFollowup, health, judgeFollowup, loadSettings, saveSettings, summarize, type Health, type Settings } from './api';
 import { applyTranscriptCorrections, canCorrectTranscript, requestTranscriptCorrections } from './transcript-correction';
 import { createRecord, renameSpeaker, searchContext, type RecordData } from './records/core';
+import { buildSummarySpeakerLabels } from './records/summary-speakers';
 import { chooseAndroidNoteFolder, loadAndroidNoteFolder, recordStore, type AndroidNoteFolder } from './records/expo';
 import { analysisContext, resolveOriginalSources, searchOriginalAnswers } from './recordContext';
 import { citationParts, validateConnection } from './workflow';
@@ -167,12 +168,13 @@ export default function App() {
     await action(async () => {
       try {
         const related = searchContext(resolveOriginalSources(list.current, record, record.turns.flatMap(turn => turn.sourceRefs ?? [])));
-        const draft = await summarize(connection, record.kind, analysisContext(record), related);
-        await recordStore.saveSummary(record.id, draft.markdown, draft.questions);
+        const summarySpeakerLabels = record.kind === 'meeting' ? buildSummarySpeakerLabels(record) : undefined;
+        const draft = await summarize(connection, record.kind, analysisContext(record, summarySpeakerLabels), related);
+        await recordStore.saveSummary(record.id, draft.markdown, draft.questions, summarySpeakerLabels);
         const latest = list.current.find(item => item.id === record.id) || record;
         const heading = draft.markdown.match(/^#\s+([^\n]+)$/m)?.[1]?.trim();
         const name = latest.title === defaultTitle(record.kind) && heading ? heading.slice(0, 120) : latest.title;
-        const next = {...latest, title: name, summary: draft.markdown, questions: draft.questions};
+        const next = {...latest, title: name, summary: draft.markdown, questions: draft.questions, summarySpeakerLabels};
         if (name !== latest.title) {
           try { await recordStore.save(next); }
           catch {

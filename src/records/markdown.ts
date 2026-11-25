@@ -1,4 +1,4 @@
-import { assertDate, assertId, assertTurn, isCategoryPath, isOriginalFilename, speakerLabel, timeLabel, type RecordData, type Turn } from './model.ts';
+import { assertDate, assertId, assertTurn, isCategoryPath, isOriginalFilename, speakerLabel, summarySpeakerNumber, timeLabel, type RecordData, type SummarySpeakerLabels, type Turn } from './model.ts';
 
 const recordTag = '<!-- sitenote-record ';
 const turnTag = '<!-- sitenote-turn ';
@@ -19,7 +19,7 @@ export function transcriptMarkdown(record: RecordData): string {
   assertId(record.id);
   assertDate(record.createdAt);
   assertDate(record.updatedAt);
-  const { turns, summary: _summary, questions: _questions, ...header } = record;
+  const { turns, summary: _summary, questions: _questions, summarySpeakerLabels: _labels, ...header } = record;
   const lines = [metadata(recordTag, header), '', `# ${heading(record.title)}`, '',
     `- 기록 ID: ${record.id}`, `- 종류: ${record.kind === 'meeting' ? '회의' : '개인 대화'}`,
     `- 생성: ${record.createdAt}`, `- 수정: ${record.updatedAt}`];
@@ -47,15 +47,17 @@ function readRecordHeader(line: string): Omit<RecordData, 'turns'> {
     (value.project !== undefined && typeof value.project !== 'string') || typeof value.allowInMeetings !== 'boolean' ||
     (value.originalFilename !== undefined && (value.kind !== 'meeting' || !isOriginalFilename(value.originalFilename))) ||
     (value.category !== undefined && !isCategoryPath(value.category)) ||
+    (value.summaryNeedsSpeakerRefresh !== undefined && (value.kind !== 'meeting' || value.summaryNeedsSpeakerRefresh !== true)) ||
     !object(value.speakers) || Object.values(value.speakers).some(name => typeof name !== 'string')) {
     throw Error('기록 메타데이터 형식이 올바르지 않습니다.');
   }
   assertId(value.id);
   assertDate(value.createdAt);
   assertDate(value.updatedAt);
-  const { id, kind, title, createdAt, updatedAt, project, category, originalFilename, allowInMeetings, speakers } = value;
+  const { id, kind, title, createdAt, updatedAt, project, category, originalFilename, allowInMeetings, speakers, summaryNeedsSpeakerRefresh } = value;
   return { id, kind, title, createdAt, updatedAt, ...(project === undefined ? {} : { project }),
-    ...(category ? {category} : {}), ...(originalFilename ? {originalFilename} : {}), allowInMeetings, speakers: speakers as RecordData['speakers'] };
+    ...(category ? {category} : {}), ...(originalFilename ? {originalFilename} : {}),
+    ...(summaryNeedsSpeakerRefresh === true && {summaryNeedsSpeakerRefresh}), allowInMeetings, speakers: speakers as RecordData['speakers'] };
 }
 
 export function parseTranscript(markdown: string): RecordData {
@@ -84,16 +86,25 @@ export function parseTranscript(markdown: string): RecordData {
   return { ...header, turns };
 }
 
-export function summaryMarkdown(markdown: string, questions: readonly string[] = []): string {
-  return `${metadata(summaryTag, { questions })}\n\n${markdown.trim()}\n`;
+export function summaryMarkdown(markdown: string, questions: readonly string[] = [], summarySpeakerLabels?: SummarySpeakerLabels): string {
+  return `${metadata(summaryTag, { questions, ...(summarySpeakerLabels && {summarySpeakerLabels}) })}\n\n${markdown.trim()}\n`;
 }
 
-export function parseSummary(markdown: string): { summary: string; questions: string[] } {
+function validSummarySpeakerLabels(value: unknown): value is SummarySpeakerLabels {
+  if (!object(value)) return false;
+  const entries = Object.entries(value);
+  return entries.every(([key, id]) => summarySpeakerNumber.test(key) && typeof id === 'string' && !!id && id.length <= 128) &&
+    new Set(entries.map(([, id]) => id)).size === entries.length;
+}
+
+export function parseSummary(markdown: string): { summary: string; questions: string[]; summarySpeakerLabels?: SummarySpeakerLabels } {
   const [first = '', ...lines] = markdown.replace(/\r\n?/g, '\n').split('\n');
   if (!first.startsWith(summaryTag)) return { summary: markdown.trim(), questions: [] };
   const info = readMetadata(first, summaryTag);
-  if (!object(info) || !Array.isArray(info.questions) || info.questions.some(q => typeof q !== 'string')) {
+  if (!object(info) || !Array.isArray(info.questions) || info.questions.some(q => typeof q !== 'string') ||
+    (info.summarySpeakerLabels !== undefined && !validSummarySpeakerLabels(info.summarySpeakerLabels))) {
     throw Error('요약 메타데이터 형식이 올바르지 않습니다.');
   }
-  return { summary: lines.join('\n').trim(), questions: info.questions as string[] };
+  return { summary: lines.join('\n').trim(), questions: info.questions as string[],
+    ...(info.summarySpeakerLabels && {summarySpeakerLabels:info.summarySpeakerLabels}) };
 }

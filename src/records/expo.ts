@@ -113,8 +113,9 @@ export const recordStore = {
     await store.save(record);
     await copyNote(record.id);
   },
-  async saveSummary(id: string, markdown: string, questions?: readonly string[]) {
-    await store.saveSummary(id, markdown, questions);
+  async saveSummary(...args: Parameters<typeof store.saveSummary>) {
+    const [id] = args;
+    await store.saveSummary(...args);
     await copyNote(id);
   },
   async delete(id: string) {

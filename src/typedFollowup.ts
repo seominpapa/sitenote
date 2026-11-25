@@ -58,13 +58,14 @@ function answeredQuestions(record: RecordData): Set<string> {
 }
 
 export function pendingTypedQuestions(record: RecordData): string[] {
+  if (record.summaryNeedsSpeakerRefresh) return [];
   const answered = answeredQuestions(record);
   return [...new Set((record.questions ?? []).map(normalizeQuestion))]
     .filter(question => question && question.length <= TYPED_QUESTION_LIMIT && !answered.has(question));
 }
 
 export function typedQuestionRequest(record: RecordData) {
-  const summary = record.summary?.trim();
+  const summary = record.summaryNeedsSpeakerRefresh ? undefined : record.summary?.trim();
   const humanTurns = record.turns.filter(turn => turn.role !== 'ai' && turn.entry !== 'typed-question' && turn.text.trim())
     .slice(-10);
   if (!summary && !humanTurns.length) return undefined;

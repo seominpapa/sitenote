@@ -1,12 +1,16 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useId, useRef, useState} from 'react';
 import {timeLabel, type RecordData, type Turn} from '../src/records/core.ts';
 import {hasMeetingArchive, readMeetingAudio} from './meeting-archive.ts';
+import {WholeMeetingPlayback} from './whole-meeting-playback.tsx';
 
 export function useMeetingPlayback(record: RecordData) {
   const [available, setAvailable] = useState(false);
   const [playing, setPlaying] = useState<Turn>();
+  const [wholeOpen, setWholeOpen] = useState(false);
   const [clipUrl, setClipUrl] = useState<string>();
   const [issue, setIssue] = useState('');
+  const wholePanel = useId();
+  const wholeButton = useRef<HTMLButtonElement>(null);
   const generation = useRef(0);
   const url = useRef<string | undefined>(undefined);
   function clearClip() {
@@ -19,6 +23,7 @@ export function useMeetingPlayback(record: RecordData) {
     let live = true;
     setAvailable(false);
     setPlaying(undefined);
+    setWholeOpen(false);
     setClipUrl(undefined);
     setIssue('');
     if (eligible) void hasMeetingArchive(id).then(exists => {
@@ -33,6 +38,7 @@ export function useMeetingPlayback(record: RecordData) {
     clearClip();
     setClipUrl(undefined);
     setPlaying(undefined);
+    setWholeOpen(false);
     setIssue('');
   }
   async function play(turn: Turn) {
@@ -63,5 +69,10 @@ export function useMeetingPlayback(record: RecordData) {
     {issue && <span role="status">{issue}</span>}
     <button type="button" className="button quiet" onClick={close}>재생 닫기</button>
   </aside> : issue ? <p role="status">{issue}</p> : null;
-  return {available, playAt, player};
+  const wholeMeeting = available && <>
+    <button type="button" className="button quiet" ref={wholeButton} aria-expanded={wholeOpen} aria-controls={wholeOpen ? wholePanel : undefined}
+      onClick={() => { close(); if (!wholeOpen) setWholeOpen(true); }}>전체 회의 듣기</button>
+    {wholeOpen && <WholeMeetingPlayback id={id} panelId={wholePanel} close={() => { close(); wholeButton.current?.focus(); }} />}
+  </>;
+  return {available, playAt, player, wholeMeeting};
 }

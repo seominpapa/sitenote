@@ -38,7 +38,7 @@ function MeetingAudioOption({checked, disabled, onChange}: {
       <span aria-hidden="true">?</span>
     </button>
     <p id={helpId} className="audio-option-bubble" hidden={!showHelp}>
-      회의 음성을 이 기기에 보관합니다. 화자가 잘못 구분되면 회의 후 발언별로 다시 듣고 올바른 화자로 옮길 수 있습니다.
+      회의 음성을 이 기기에 보관합니다. 회의 후 전체를 다시 듣거나, 화자가 잘못 구분된 발언을 다시 듣고 올바른 화자로 옮길 수 있습니다.
     </p>
   </div>;
 }
@@ -710,7 +710,7 @@ export function Detail({ record, related, part, busy, open, back, summarize, cor
         <button className="button quiet" onClick={() => exportRecord(record)}><Icon name="download" /> Markdown 내보내기</button>
         {record.originalFilename && !part && <OriginalFile id={record.id} />}
       </div>
-      {correctTranscript && <p className="muted" id="transcript-correction-help">전사 보정을 누르면 이 기록의 발언을 OpenAI에 보냅니다. 보정 전 원문은 그대로 보관합니다.</p>}
+      {correctTranscript && <p className="muted" id="transcript-correction-help">전사 보정을 누르면 발언을 OpenAI에 보내 문맥에 맞게 보정합니다. 노트에는 보정본이 먼저 표시됩니다. 처음 받아쓴 문장은 발언 아래 ‘보정 전 원문 보기’와 Markdown 내보내기에서 확인할 수 있습니다.</p>}
     </div>
     {offerFollowup && <FollowupInvitation issue={followupIssue} prepared={consentAudio} accept={followup} typeAnswer={openTypedFollowup}
       dismiss={dismissFollowup} keySettings={keySettings} />}
@@ -718,9 +718,10 @@ export function Detail({ record, related, part, busy, open, back, summarize, cor
       busy={busy} load={loadTypedFollowup} save={saveTypedFollowup} close={closeTypedFollowup} />}
     <section id="summary" className="summary" tabIndex={-1}>
       <h2>요약</h2>
+      {record.summaryNeedsSpeakerRefresh && <p className="notice">발언의 화자가 바뀌었습니다. 새 화자를 반영하려면 ‘요약 다시 만들기’를 누르세요.</p>}
       {part && summarySourceEvidence(record,part) && <p className="notice">요약에만 있는 내용 · 원문에서 확인되지 않았습니다.</p>}
       {summary.length ? summary : <p className="muted">아직 요약이 없습니다.</p>}
-      {!!record.questions?.length && <><h3>확인할 사항</h3><ul>{record.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></>}
+      {!record.summaryNeedsSpeakerRefresh && !!record.questions?.length && <><h3>확인할 사항</h3><ul>{record.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></>}
     </section>
     <details className="edit-record">
       <summary>기록 설정</summary>
@@ -753,7 +754,10 @@ export function Detail({ record, related, part, busy, open, back, summarize, cor
       </form>
     </details>
     <SpeakerNames record={record} busy={busy} rename={rename} />
-    <h2>{record.originalFilename ? `문서 본문 · ${record.originalFilename}` : `원문 · ${original.length}개 발언`}</h2>
+    <div className="original-heading">
+      <h2>{record.originalFilename ? `문서 본문 · ${record.originalFilename}` : `원문 · ${original.length}개 발언`}</h2>
+      {audio.wholeMeeting}
+    </div>
     {original.length ? <Transcript turns={original} record={record} originalAt={part} afterTurn={turn => record.originalFilename && turn.id === part
       ? <OriginalFile id={record.id} /> : <>{audio.playAt(turn)}{answerSources(turn)}</>} /> : <div className="empty">아직 전사된 발언이 없습니다.</div>}
     {!!supplemental.length && <><h2>회의 후 보충 질문 · {supplemental.length}개 발언</h2><Transcript turns={supplemental} record={record} originalAt={part} afterTurn={answerSources} /></>}

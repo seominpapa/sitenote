@@ -1,4 +1,4 @@
-import { assertId, type RecordData } from './model.ts';
+import { assertId, type RecordData, type SummarySpeakerLabels } from './model.ts';
 import { parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown } from './markdown.ts';
 
 export type FileName = 'transcript.md' | 'summary.md';
@@ -54,10 +54,10 @@ export function createRecordStore(files: RecordFiles) {
       assertId(record.id);
       await files.write(record.id, 'transcript.md', transcriptMarkdown(record));
     }),
-    saveSummary: (id: string, markdown: string, questions?: readonly string[]) => enqueue(async () => {
+    saveSummary: (id: string, markdown: string, questions?: readonly string[], labels?: SummarySpeakerLabels) => enqueue(async () => {
       assertId(id);
       if (await files.read(id, 'transcript.md') === undefined) throw Error('요약을 저장할 원문이 없습니다.');
-      await files.write(id, 'summary.md', summaryMarkdown(markdown, questions));
+      await files.write(id, 'summary.md', summaryMarkdown(markdown, questions, labels));
     }),
     delete: (id: string) => enqueue(async () => { assertId(id); await files.delete(id); }),
   };

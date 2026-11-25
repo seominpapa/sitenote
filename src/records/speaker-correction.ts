@@ -56,7 +56,7 @@ export function correctMeetingSpeakers(record:RecordData, selection:readonly Sel
   if (!changed.length) return {record};
   const ids = new Set(changed.map(turn => turn.id));
   return {
-    record:{...record, updatedAt:new Date().toISOString(),
+    record:{...record, updatedAt:new Date().toISOString(), ...(record.summary && {summaryNeedsSpeakerRefresh:true}),
       ...(name && {speakers:{...record.speakers,[targetId]:name}}),
       turns:record.turns.map(turn => ids.has(turn.id) ? {...turn,speakerId:targetId} : turn)},
     change:{recordId:record.id, previous:changed.map(({id,speakerId}) => ({id,speakerId})), targetId,
@@ -77,7 +77,7 @@ export function undoMeetingSpeakerCorrection(record:RecordData, change:SpeakerCo
   });
   const removeName = change.addedName !== undefined && record.speakers[change.targetId] === change.addedName &&
     !turns.some(turn => turn.speakerId === change.targetId);
-  return {...record, updatedAt:new Date().toISOString(), turns, ...(removeName && {
+  return {...record, updatedAt:new Date().toISOString(), turns, ...(record.summary && {summaryNeedsSpeakerRefresh:true}), ...(removeName && {
     speakers:Object.fromEntries(Object.entries(record.speakers).filter(([id]) => id !== change.targetId)),
   })};
 }

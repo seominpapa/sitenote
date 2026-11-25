@@ -2,6 +2,7 @@ import type { FileName } from '../src/records/store.ts';
 import { buildNoteExport, buildNotesExport, noteFolderName, readableSummary, readableTranscript } from '../src/records/export.ts';
 import { parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown } from '../src/records/markdown.ts';
 import { assertId, isCategoryPath, safeId, type RecordData } from '../src/records/model.ts';
+import { buildSummarySpeakerLabels } from '../src/records/summary-speakers.ts';
 import { noteFiles, type NoteFilesEntry, type StoredRecord } from './note-files.ts';
 
 type StorageIssue = { id: string; file: FileName; cause: unknown };
@@ -226,8 +227,11 @@ export const records = {
     const latest = parseStored(entry);
     if (!latest || latest.updatedAt !== base.updatedAt || latest.summary !== base.summary ||
       JSON.stringify(latest.questions) !== JSON.stringify(base.questions)) return;
-    store.put({...entry, 'summary.md':summaryMarkdown(markdown, questions)});
-    return {...latest, summary:markdown, questions};
+    const summarySpeakerLabels = latest.kind === 'meeting' ? buildSummarySpeakerLabels(base) : undefined;
+    const {summaryNeedsSpeakerRefresh:_stale,...record} = latest;
+    store.put({...entry, ...(latest.summaryNeedsSpeakerRefresh && {'transcript.md':transcriptMarkdown(record)}),
+      'summary.md':summaryMarkdown(markdown, questions, summarySpeakerLabels)});
+    return {...record, summary:markdown, questions, summarySpeakerLabels};
   }).then(async record => {
     if (record) {
       libraryChanged();

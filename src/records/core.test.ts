@@ -460,6 +460,20 @@ test('summary-assisted search does not ground a different owner in a related pas
   assert.equal(evidence[1]?.summaryOnly,true);
 });
 
+test('speaker corrections exclude stale summary claims from new answers but retain old source links', () => {
+  const record = applyTurn({...make('stale-owner'), summary:'장비 반입 담당자는 김민수입니다. [record:stale-owner#owner]'},
+    turn('owner','장비 반입 담당자는 미정입니다.'));
+  const query = '장비 반입 담당자는 누구야?';
+  const summary = searchOriginalAnswers([record], query).find(item=>item.summaryOnly);
+  assert(summary);
+  const stale = {...record,summaryNeedsSpeakerRefresh:true as const};
+  const result = searchOriginalAnswers([stale], query);
+  assert(result.some(item=>item.reference === '[record:stale-owner#owner]'));
+  assert(!result.some(item=>item.summaryOnly));
+  const active = {...make('active'),createdAt:'2026-11-21T01:02:03.000Z'};
+  assert.equal(resolveOriginalSources([stale],active,[summary.reference])[0]?.reference,summary.reference);
+});
+
 test('stored citations resolve unique allowed human turns in order, with full original and no stale fallback', () => {
   const active = make('active', 'meeting', '현재', 'X');
   const text = `원문 그대로 ${'가'.repeat(850)}`;

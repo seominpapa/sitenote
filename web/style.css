@@ -130,7 +130,8 @@ label > input:not([type=checkbox]), label > select { width: 100% }
 .original-file { margin-top: .55rem }
 .document-import label { display: grid; gap: .3rem }
 .document-import > p { flex-basis: 100% }
-.section-heading h2, .page-stack > h2, .summary h2, .source-panel h2, .source-reader h2 { color: var(--ink); font-size: clamp(1.25rem, 2.4vw, 1.5rem); line-height: 1.25 }
+.section-heading h2, .page-stack > h2, .original-heading h2, .summary h2, .source-panel h2, .source-reader h2 { color: var(--ink); font-size: clamp(1.25rem, 2.4vw, 1.5rem); line-height: 1.25 }
+.original-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem }
 .section-heading h2 small { margin-inline-start: .38rem; color: var(--muted-ink); font-size: .75rem; font-variant-numeric: tabular-nums }
 .library-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .55rem .75rem; margin-block: .92rem .72rem }
 .library-tabs { display: flex; flex-wrap: wrap; gap: .3rem }
@@ -306,14 +307,17 @@ summary { width: fit-content; max-width: 100%; color: var(--ink); font-weight: 6
   .record-actions .record-row > .badge { display: inline-block }
 }
 @media (min-width: 40rem) {
-  .start-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) }
+  .start-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 0 }
+  .start-card { display: grid; grid-template-rows: subgrid; grid-row: span 7; justify-items: start }
+  .recording-form { grid-template-rows: subgrid; grid-row: span 4; margin-block-start: 0 }
+  .recording-form .button { grid-row: -2 / -1 }
   .section-heading { flex-direction: row; align-items: center }
   .record-row { padding-inline: .65rem; gap: .75rem }
   .category-folders details { padding-inline-start: .8rem }
 }
 @media (min-width: 56rem) {
-  .start-card { padding: 2rem }
-  .recording-form { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) }
+  .start-card { padding: 2rem; grid-row: span 6 }
+  .recording-form { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); grid-row: span 3 }
   .tile-icon { width: 3.5rem; height: 3.5rem }
   .tile-icon svg { width: 1.8rem; height: 1.8rem }
 }
@@ -323,4 +327,7 @@ summary { width: fit-content; max-width: 100%; color: var(--ink); font-weight: 6
   box-shadow:0 5px 24px #20203022;
 }
 .meeting-player audio { max-width:100%; }
+.whole-meeting-player { position: static; flex: 1 1 100%; min-width: 0 }
+.whole-meeting-player p { margin: 0 }
+.whole-meeting-player input[type=range] { flex: 1 1 10rem; min-width: 5rem; padding: 0; accent-color: var(--primary) }
 .turn-play { margin-top:.45rem; }

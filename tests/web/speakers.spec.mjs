@@ -169,6 +169,87 @@ test('optional correction moves only selected utterances and preserves source an
   }
 });
 
+test('regenerated summaries preserve corrected speaker names and separate equal numbers from different streams', async ({page}) => {
+  const id = 'speaker-summary-regeneration';
+  const title = '회의 요약 화자 검증';
+  const moved = utterance('moved','meeting:a:1','김 담당이 현장 점검을 맡습니다.',2000);
+  const stayed = utterance('stayed','meeting:a:1','서 부장이 일정을 공지합니다.',5000);
+  const reconnected = utterance('reconnected','meeting:b:1','이 과장이 자재를 확인합니다.',9000);
+  const record = {...createRecord({id,kind:'meeting',title}),turns:[moved,stayed,reconnected],
+    speakers:{[stayed.speakerId]:'서 부장',[reconnected.speakerId]:'이 과장'}};
+  const entries = [];
+  const server = createApp({
+    webRoot:process.env.SITENOTE_WEB_TEST_ROOT || fileURLToPath(new URL('../../dist/web', import.meta.url)),
+    accessToken:'local-mock-summary-regeneration-token-only',openaiKey:'test-purpose-only',
+    async transport(_url,request) {
+      const input = JSON.parse(JSON.parse(request.body).input);
+      const spoken = new Map([...input.source.matchAll(/^(\[record:[^\]\n]+\])\n(\{[^\n]+\})/gm)]
+        .map(([,anchor,encoded]) => [anchor,JSON.parse(encoded).speaker]));
+      entries.push(spoken);
+      const owned = [moved,stayed,reconnected].map((turn,i) => {
+        const anchor = `[record:${id}#${turn.id}]`;
+        return `- ${spoken.get(anchor)}이 시험 항목 ${i+1}을 확인했습니다. ${anchor}`;
+      });
+      return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',
+        text:JSON.stringify({markdown:['## 새 요약',...owned].join('\n'),questions:[]})}]}]});
+    },
+  });
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  try {
+    await page.goto('http://127.0.0.1:' + server.address().port);
+    await page.evaluate(entry => new Promise((resolve,reject) => {
+      const open = indexedDB.open('sitenote',1);
+      open.onupgradeneeded = () => open.result.createObjectStore('markdown',{keyPath:'id'});
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction('markdown','readwrite');
+        tx.objectStore('markdown').put(entry);
+        tx.oncomplete = () => {db.close(); resolve();};
+        tx.onabort = () => {db.close(); reject(tx.error);};
+      };
+    }),{id,'transcript.md':transcriptMarkdown(record),
+      'summary.md':summaryMarkdown('## 기존 요약\n- 화자 1이 점검합니다. [record:speaker-summary-regeneration#moved]')});
+    async function reopen() {
+      await page.reload();
+      await page.getByTestId('record-item').filter({hasText:title}).click();
+    }
+    await reopen();
+    await page.getByText('화자 정정 (선택 사항)',{exact:true}).click();
+    const menu = page.getByRole('form',{name:'화자 정정'});
+    await menu.getByRole('checkbox',{name:/현장 점검을 맡습니다/}).check();
+    await menu.getByLabel('옮길 화자').selectOption({label:'새 화자 추가'});
+    await menu.getByLabel('새 화자 이름 (선택 사항)').fill('김 담당');
+    await menu.getByRole('button',{name:'선택한 1개 발언 옮기기'}).click();
+    const movedTurn = page.locator('#moved[data-testid=transcript-turn]');
+    await expect(movedTurn).toContainText('김 담당');
+    const regenerated = page.getByRole('button',{name:'요약 다시 만들기'});
+    await regenerated.click();
+    await expect(page.getByRole('heading',{name:'새 요약'})).toBeVisible();
+    expect(entries).toHaveLength(1);
+    expect([...entries[0].keys()]).toEqual([moved,stayed,reconnected].map(turn => `[record:${id}#${turn.id}]`));
+    expect([...new Set(entries[0].values())]).toHaveLength(3);
+    for (const label of entries[0].values()) expect(label).toMatch(/^화자 \d+$/);
+    await reopen();
+    const summary = page.locator('#summary');
+    await expect(summary).toContainText('김 담당이 시험 항목 1을');
+    await expect(summary).toContainText('서 부장이 시험 항목 2을');
+    await expect(summary).toContainText('이 과장이 시험 항목 3을');
+    await page.evaluate(hash => {window.location.hash = hash;},`#record:${id}#${moved.id}`);
+    await expect(movedTurn).toBeFocused();
+    const requested = page.waitForEvent('download');
+    await page.getByRole('button',{name:'Markdown 내보내기'}).click();
+    const markdown = await readFile(await (await requested).path(),'utf8');
+    expect(markdown).toContain('김 담당이 시험 항목 1을');
+    expect(markdown).toContain('서 부장이 시험 항목 2을');
+    expect(markdown).toContain('이 과장이 시험 항목 3을');
+  } finally {
+    await page.close();
+    await new Promise(done => server.close(done));
+  }
+});
+
 async function seedArchivedMeeting(page, note) {
   return page.evaluate(({entry,id,turns}) => {
     const store = (database,name,upgrade,write) => new Promise((resolve,reject) => {

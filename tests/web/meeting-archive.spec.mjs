@@ -103,3 +103,24 @@ test('normal teardown retains the recording and overlapping reconnected frames k
   });
   expect(result).toEqual([1,1,1,1,2,2]);
 });
+
+test('whole-meeting windows outlast preview limits and preserve silent gaps on the original timeline', async ({ page }) => {
+  await page.goto(new URL('/archive-test', origin).href);
+  const result = await page.evaluate(async () => {
+    const {createMeetingArchive, meetingAudioDuration, readMeetingAudioWindow, removeMeetingArchive} = await import('/meeting-archive.ts');
+    const archive = createMeetingArchive('long-archive');
+    archive.appendFrame(0, btoa('\u0001\u0000'.repeat(480)));
+    archive.appendFrame(1_800_000, btoa('\u0002\u0000'.repeat(480)));
+    await archive.finish();
+    const duration = await meetingAudioDuration('long-archive');
+    const bytes = async (from, to) => new DataView(await (await readMeetingAudioWindow('long-archive',from,to)).arrayBuffer());
+    const empty = await bytes(10_000, 12_000);
+    const tail = await bytes(74_990, duration);
+    await removeMeetingArchive('long-archive');
+    return {duration, emptyFrames:empty.getUint32(40,true) / 2,
+      emptyEnergy:new Uint8Array(empty.buffer,44).some(Boolean),
+      tailFrames:tail.getUint32(40,true)/2, tailSamples:[0,239,240,719].map(i => tail.getInt16(44 + i*2,true)),
+      removed:await meetingAudioDuration('long-archive') === undefined};
+  });
+  expect(result).toEqual({duration:75020,emptyFrames:48000,emptyEnergy:false,tailFrames:720,tailSamples:[0,0,2,2],removed:true});
+});

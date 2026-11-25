@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {createRecord, renameSpeaker, type Turn} from './model.ts';
-import {summaryWithSpeakerNames} from './summary-speakers.ts';
-import {analysisContext} from '../recordContext.ts';
+import {parseSummary, parseTranscript, summaryMarkdown, transcriptMarkdown} from './markdown.ts';
+import {buildSummarySpeakerLabels, summaryWithSpeakerNames} from './summary-speakers.ts';
+import {analysisContext, liveContext} from '../recordContext.ts';
 
 function meeting(summary?: string) {
   const voice = (id: string, speakerId: string, section: Turn['section'] = 'meeting'): Turn =>
@@ -52,4 +53,32 @@ test('new summaries use stable speaker labels even after an actual name is enter
   const context = analysisContext(record);
   assert.match(context, /\[record:meeting#main\][\s\S]*?"speaker":"화자 1"/);
   assert.doesNotMatch(context, /개인 이름/);
+});
+
+test('new summaries disambiguate labels across streams and keep names local', () => {
+  const original = meeting();
+  const record = renameSpeaker(renameSpeaker(renameSpeaker(original, 'meeting:a:1', '한 참가자'),
+    'meeting:b:1', '김 참가자'), 'followup:c:1', '서 참가자');
+  const labels = buildSummarySpeakerLabels(record);
+  assert.deepEqual(labels, {'1':'meeting:a:1', '2':'meeting:a:2', '3':'meeting:b:1', '4':'followup:c:1'});
+  const context = analysisContext(record);
+  assert.match(context, /\[record:meeting#other\]\n[^\n]+"speaker":"화자 3"/);
+  assert.match(context, /\[record:meeting#followup\]\n[^\n]+"speaker":"화자 4"/);
+  assert.doesNotMatch(context, /참가자|meeting:b:1/);
+  const summary = '- 화자 3이 확인. [record:meeting#other]\n- 화자 3이 답변. [record:meeting#main]\n- 화자 4의 확인. [record:meeting#followup]\n- 화자 3이 말했습니다.';
+  const roundtrip = {...parseTranscript(transcriptMarkdown(record)), ...parseSummary(summaryMarkdown(summary, [], labels))};
+  assert.equal(summaryWithSpeakerNames(roundtrip), summary.replace('화자 3이 확인','김 참가자가 확인').replace('화자 4의 확인','서 참가자의 확인'));
+  assert.equal(summaryWithSpeakerNames(renameSpeaker(roundtrip,'meeting:b:1','박 팀장'))?.includes('박 팀장이 확인'),true);
+  assert.match(summaryWithSpeakerNames(renameSpeaker(roundtrip,'meeting:b:1','')) ?? '', /화자 1 \(구분 2\)이 확인/);
+});
+
+test('stale summaries keep their original attribution and their stale status roundtrips', () => {
+  const original = meeting('- 화자 1이 확인. [record:meeting#main]');
+  const record = {...renameSpeaker(original,'meeting:a:1','한 참가자'),summaryNeedsSpeakerRefresh:true as const};
+  const roundtrip = {...parseTranscript(transcriptMarkdown(record)), summary:record.summary, summarySpeakerLabels:buildSummarySpeakerLabels(record)};
+  assert.equal(roundtrip.summaryNeedsSpeakerRefresh, true);
+  assert.equal(summaryWithSpeakerNames(roundtrip),original.summary);
+  assert.doesNotMatch(liveContext({...roundtrip, questions:['오래된 보충 질문']},true).context, /화자 1이 확인|오래된 보충 질문/);
+  assert.match(liveContext({...roundtrip, summaryNeedsSpeakerRefresh:undefined},true).context, /화자 1이 확인/);
+  assert.throws(() => parseSummary('<!-- sitenote-summary {"questions":[],"summarySpeakerLabels":{"1":"meeting:a:1","2":"meeting:a:1"}} -->\n\n요약'),/요약 메타데이터/);
 });

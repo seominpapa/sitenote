@@ -12,6 +12,8 @@ export type Turn = {
   quotedRefs?: string[];
 };
 
+export type SummarySpeakerLabels = Readonly<Record<string, string>>;
+
 export type RecordData = {
   id: string;
   kind: 'meeting' | 'personal';
@@ -26,7 +28,11 @@ export type RecordData = {
   turns: Turn[];
   summary?: string;
   questions?: string[];
+  summarySpeakerLabels?: SummarySpeakerLabels;
+  summaryNeedsSpeakerRefresh?: true;
 };
+
+export const summarySpeakerNumber = /^\d{1,12}$/;
 
 export const safeId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 export const isTranscribedTurn = (turn: Turn) => turn.id.startsWith('soniox-') && turn.role !== 'ai' && !turn.entry;

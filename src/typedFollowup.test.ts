@@ -69,3 +69,12 @@ test('generation uses only the active meeting material and an exact bounded hist
   });
   assert.equal(typedJudgeRequest('담당자?', '박민수', []).hasNext, false);
 });
+
+test('a stale summary is not used as the source of new typed follow-up questions', () => {
+  const base = {...record(), summary:'예전 화자에 대한 요약', questions:['오래된 질문'], summaryNeedsSpeakerRefresh:true as const};
+  assert.deepEqual(pendingTypedQuestions(base), []);
+  assert.equal(typedQuestionRequest(base), undefined);
+  const latest = applyTurn(base,{id:'voice',role:'speaker',section:'meeting',timeMs:0,text:'다른 사람이 확인했습니다.'});
+  assert.match(typedQuestionRequest(latest)?.context ?? '', /다른 사람이 확인/);
+  assert.doesNotMatch(typedQuestionRequest(latest)?.context ?? '', /예전 화자|오래된 질문/);
+});
